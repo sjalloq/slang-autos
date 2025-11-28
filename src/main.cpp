@@ -53,9 +53,9 @@ int main(int argc, char* argv[]) {
     bool no_alignment = false;
     app.add_flag("--no-alignment", no_alignment, "Don't align port names");
 
-    // Verbosity
-    int verbosity = 1;
-    app.add_flag("-v,--verbose", verbosity, "Increase verbosity (can be repeated)");
+    // Verbosity: default is 1, -v increases, -q sets to 0
+    int verbose_count = 0;
+    app.add_flag("-v,--verbose", verbose_count, "Increase verbosity (can be repeated)");
 
     bool quiet = false;
     app.add_flag("-q,--quiet", quiet, "Suppress non-error output");
@@ -82,10 +82,8 @@ int main(int argc, char* argv[]) {
     // Collect extra args (EDA-style options)
     extra_args = app.remaining();
 
-    // Handle quiet flag
-    if (quiet) {
-        verbosity = 0;
-    }
+    // Compute verbosity: default 1, -v adds, -q sets to 0
+    int verbosity = quiet ? 0 : (1 + verbose_count);
 
     // ========================================================================
     // Build tool options

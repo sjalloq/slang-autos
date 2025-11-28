@@ -246,6 +246,14 @@ AutosTool::expandAutoInst(
     // Get module ports
     auto ports = getModulePorts(module_type);
 
+    // If no ports found (module not in compilation), preserve existing content
+    if (ports.empty()) {
+        diagnostics_.addWarning(
+            "No ports found for module '" + module_type + "', preserving existing content",
+            autoinst.file_path, autoinst.line_number);
+        return std::nullopt;
+    }
+
     // Find manual ports
     auto manual_ports = findManualPorts(content, autoinst.source_offset);
 
