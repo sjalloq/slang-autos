@@ -91,6 +91,13 @@ private:
         const PortInfo& port,
         const std::vector<std::string>& port_captures);
 
+    /// Evaluate ternary expressions in a signal expression.
+    /// Supports: condition ? true_value : false_value
+    /// where condition is "0" or "1" (from port.input etc. substitution)
+    /// @param expr Expression that may contain a ternary
+    /// @return Evaluated result or original expression if not a ternary
+    std::string evaluateTernary(const std::string& expr);
+
     const AutoTemplate* template_;
     DiagnosticCollector* diagnostics_;
     std::string inst_name_;

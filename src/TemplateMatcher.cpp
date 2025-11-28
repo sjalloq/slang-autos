@@ -10,9 +10,9 @@ namespace {
 // Special value mappings
 const std::unordered_map<std::string, std::string> SPECIAL_VALUE_MAP = {
     {"_", ""},       // Unconnected
-    {"'0", "1'b0"},  // Constant 0
-    {"'1", "1'b1"},  // Constant 1
-    {"'z", "1'bz"},  // High impedance
+    {"'0", "'0"},    // Constant 0 (unsized literal)
+    {"'1", "'1"},    // Constant 1 (unsized literal)
+    {"'z", "'z"},    // High impedance (unsized literal)
 };
 
 } // anonymous namespace
@@ -83,14 +83,16 @@ MatchResult TemplateMatcher::matchPort(const PortInfo& port) {
                     port_captures.push_back(match[i].str());
                 }
 
-                // Apply substitution
+                // Apply substitution and evaluate any ternary expressions
                 std::string signal_name = substitute(rule.signal_expr, port, port_captures);
+                signal_name = evaluateTernary(signal_name);
                 return MatchResult(signal_name, &rule);
             }
         } catch (const std::regex_error&) {
             // Invalid regex - try literal match
             if (rule.port_pattern == port.name) {
                 std::string signal_name = substitute(rule.signal_expr, port, {});
+                signal_name = evaluateTernary(signal_name);
                 return MatchResult(signal_name, &rule);
             }
         }
@@ -180,6 +182,20 @@ std::string TemplateMatcher::substitute(
         while ((pos = result.find("port.direction")) != std::string::npos) {
             result.replace(pos, 14, port.direction);
         }
+        // Direction boolean variables (for ternary expressions)
+        std::string is_input = (port.direction == "input") ? "1" : "0";
+        std::string is_output = (port.direction == "output") ? "1" : "0";
+        std::string is_inout = (port.direction == "inout") ? "1" : "0";
+
+        while ((pos = result.find("port.input")) != std::string::npos) {
+            result.replace(pos, 10, is_input);
+        }
+        while ((pos = result.find("port.output")) != std::string::npos) {
+            result.replace(pos, 11, is_output);
+        }
+        while ((pos = result.find("port.inout")) != std::string::npos) {
+            result.replace(pos, 10, is_inout);
+        }
         while ((pos = result.find("inst.name")) != std::string::npos) {
             result.replace(pos, 9, inst_name_);
         }
@@ -222,6 +238,19 @@ std::string TemplateMatcher::substitute(
     }
 
     return result;
+}
+
+std::string TemplateMatcher::evaluateTernary(const std::string& expr) {
+    // Match: condition ? true_value : false_value
+    // condition is "0" or "1" (after port.input etc. substitution)
+    static const std::regex ternary_re(R"(^\s*(0|1)\s*\?\s*(.+?)\s*:\s*(.+?)\s*$)");
+    std::smatch match;
+
+    if (std::regex_match(expr, match, ternary_re)) {
+        bool condition = (match[1].str() == "1");
+        return condition ? match[2].str() : match[3].str();
+    }
+    return expr;  // Not a ternary, return as-is
 }
 
 bool TemplateMatcher::isSpecialValue(const std::string& signal) {

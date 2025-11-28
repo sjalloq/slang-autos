@@ -109,10 +109,99 @@ TEST_CASE("TemplateMatcher - special values", "[template]") {
     CHECK(TemplateMatcher::isSpecialValue("'z"));
     CHECK_FALSE(TemplateMatcher::isSpecialValue("signal"));
 
+    // Special values keep unsized literal form (not converted to 1'bX)
     CHECK(TemplateMatcher::formatSpecialValue("_") == "");
-    CHECK(TemplateMatcher::formatSpecialValue("'0") == "1'b0");
-    CHECK(TemplateMatcher::formatSpecialValue("'1") == "1'b1");
-    CHECK(TemplateMatcher::formatSpecialValue("'z") == "1'bz");
+    CHECK(TemplateMatcher::formatSpecialValue("'0") == "'0");
+    CHECK(TemplateMatcher::formatSpecialValue("'1") == "'1");
+    CHECK(TemplateMatcher::formatSpecialValue("'z") == "'z");
+}
+
+TEST_CASE("TemplateMatcher - port.input/output/inout variables", "[template]") {
+    AutoTemplate tmpl;
+    tmpl.module_name = "submod";
+    tmpl.rules.emplace_back(".*", "port.input_port.output_port.inout");
+
+    TemplateMatcher matcher(&tmpl);
+    matcher.setInstance("u_sub");
+
+    SECTION("input port") {
+        PortInfo port("data", "input");
+        auto result = matcher.matchPort(port);
+        CHECK(result.signal_name == "1_0_0");
+    }
+
+    SECTION("output port") {
+        PortInfo port("data", "output");
+        auto result = matcher.matchPort(port);
+        CHECK(result.signal_name == "0_1_0");
+    }
+
+    SECTION("inout port") {
+        PortInfo port("data", "inout");
+        auto result = matcher.matchPort(port);
+        CHECK(result.signal_name == "0_0_1");
+    }
+}
+
+TEST_CASE("TemplateMatcher - ternary expressions", "[template]") {
+    AutoTemplate tmpl;
+    tmpl.module_name = "submod";
+
+    SECTION("ternary with constants") {
+        tmpl.rules.emplace_back(".*", "port.input ? '0 : _");
+        TemplateMatcher matcher(&tmpl);
+        matcher.setInstance("u_sub");
+
+        // Input port should get '0
+        PortInfo input_port("data_in", "input");
+        auto result1 = matcher.matchPort(input_port);
+        CHECK(result1.signal_name == "'0");
+
+        // Output port should get _ (unconnected)
+        PortInfo output_port("data_out", "output");
+        auto result2 = matcher.matchPort(output_port);
+        CHECK(result2.signal_name == "_");
+    }
+
+    SECTION("ternary with signal names") {
+        tmpl.rules.emplace_back(".*", "port.output ? data_out_sig : _");
+        TemplateMatcher matcher(&tmpl);
+        matcher.setInstance("u_sub");
+
+        // Output port should get signal name
+        PortInfo output_port("valid", "output");
+        auto result1 = matcher.matchPort(output_port);
+        CHECK(result1.signal_name == "data_out_sig");
+
+        // Input port should get _
+        PortInfo input_port("ready", "input");
+        auto result2 = matcher.matchPort(input_port);
+        CHECK(result2.signal_name == "_");
+    }
+
+    SECTION("ternary with instance substitution") {
+        tmpl.rules.emplace_back("data", "port.input ? data_@_in : data_@_out");
+        TemplateMatcher matcher(&tmpl);
+        matcher.setInstance("u_sub_3");
+
+        PortInfo input_port("data", "input");
+        auto result1 = matcher.matchPort(input_port);
+        CHECK(result1.signal_name == "data_3_in");
+
+        PortInfo output_port("data", "output");
+        auto result2 = matcher.matchPort(output_port);
+        CHECK(result2.signal_name == "data_3_out");
+    }
+
+    SECTION("non-ternary expression unchanged") {
+        tmpl.rules.emplace_back(".*", "regular_signal");
+        TemplateMatcher matcher(&tmpl);
+        matcher.setInstance("u_sub");
+
+        PortInfo port("data", "input");
+        auto result = matcher.matchPort(port);
+        CHECK(result.signal_name == "regular_signal");
+    }
 }
 
 TEST_CASE("TemplateMatcher - first matching rule wins", "[template]") {
