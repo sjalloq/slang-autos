@@ -1,4 +1,5 @@
 #include "slang-autos/Tool.h"
+#include "slang-autos/AutosRewriter.h"
 
 #include <fstream>
 #include <set>
@@ -12,6 +13,8 @@
 #include "slang/ast/symbols/CompilationUnitSymbols.h"
 #include "slang/ast/types/Type.h"
 #include "slang/ast/types/AllTypes.h"
+#include "slang/syntax/SyntaxTree.h"
+#include "slang/syntax/SyntaxPrinter.h"
 
 namespace slang_autos {
 
@@ -90,44 +93,82 @@ ExpansionResult AutosTool::expandFile(
     result.original_content = buffer.str();
     result.modified_content = result.original_content;
 
-    // Parse AUTO comments
+    // Check if we have a compilation
+    if (!compilation_) {
+        diagnostics_.addError("No compilation available - call loadWithArgs first");
+        result.success = false;
+        return result;
+    }
+
+    // Parse AUTO comments (still need this for template extraction)
     AutoParser parser(&diagnostics_);
     parser.parseText(result.original_content, file.string());
 
-    // Collect all expanded signals for AUTOWIRE
-    std::vector<ExpandedSignal> all_signals;
+    // Parse inline configuration
+    InlineConfig inline_config = parseInlineConfig(result.original_content);
+    PortGrouping grouping = inline_config.grouping.value_or(PortGrouping::ByDirection);
 
-    // Process AUTOINSTs first (to collect signals for AUTOWIRE)
-    for (const auto& autoinst : parser.autoinsts()) {
-        auto expansion = expandAutoInst(result.modified_content, autoinst, parser);
-        if (expansion) {
-            result.replacements.push_back(expansion->first);
-            all_signals.insert(all_signals.end(),
-                              expansion->second.begin(),
-                              expansion->second.end());
-            ++result.autoinst_count;
-        }
+    // Parse the source with slang's SyntaxTree
+    using namespace slang::syntax;
+    auto tree = SyntaxTree::fromText(result.original_content);
+    if (!tree) {
+        diagnostics_.addError("Failed to parse file as SystemVerilog");
+        result.success = false;
+        return result;
     }
 
-    // Process AUTOWIREs
-    for (const auto& autowire : parser.autowires()) {
-        auto replacement = expandAutoWire(result.modified_content, autowire, all_signals);
-        if (replacement) {
-            result.replacements.push_back(*replacement);
-            ++result.autowire_count;
+    // Configure rewriter options
+    AutosRewriterOptions rewriter_opts;
+    rewriter_opts.use_logic = true;
+    rewriter_opts.alignment = options_.alignment;
+    rewriter_opts.indent = options_.indent;
+    rewriter_opts.grouping = grouping;
+    rewriter_opts.strictness = options_.strictness;
+    rewriter_opts.diagnostics = &diagnostics_;
+
+    // Create unified rewriter with templates from parser
+    AutosRewriter rewriter(*compilation_, parser.templates(), rewriter_opts);
+
+    // Transform the tree (handles AUTOINST, AUTOWIRE, AUTOREG in one pass)
+    auto new_tree = rewriter.transform(tree);
+
+    // Convert back to text
+    result.modified_content = SyntaxPrinter::printFile(*new_tree);
+
+    // Remove the dummy marker localparam that was added to preserve trivia
+    const std::string dummy_marker = "localparam _SLANG_AUTOS_END_MARKER_ = 0;";
+    size_t pos = result.modified_content.find(dummy_marker);
+    while (pos != std::string::npos) {
+        // Find the start of the line
+        size_t line_start = result.modified_content.rfind('\n', pos);
+        line_start = (line_start == std::string::npos) ? 0 : line_start + 1;
+
+        // Find the end of the line
+        size_t line_end = result.modified_content.find('\n', pos);
+        if (line_end != std::string::npos) {
+            line_end++;  // Include the newline
+        } else {
+            line_end = result.modified_content.length();
         }
+
+        // Remove the line
+        result.modified_content.erase(line_start, line_end - line_start);
+
+        // Look for more occurrences
+        pos = result.modified_content.find(dummy_marker);
     }
 
-    // Apply all replacements
-    if (!result.replacements.empty()) {
-        SourceWriter writer(dry_run);
-        result.modified_content = writer.applyReplacements(
-            result.original_content, result.replacements);
+    // Count expansions (for reporting)
+    // The rewriter handles these internally, so we just check if content changed
+    if (result.hasChanges()) {
+        result.autoinst_count = static_cast<int>(parser.autoinsts().size());
+        result.autowire_count = static_cast<int>(parser.autowires().size());
+    }
 
-        // Write file if not dry run
-        if (!dry_run) {
-            writer.writeFile(file, result.modified_content);
-        }
+    // Write file if not dry run and there were changes
+    if (!dry_run && result.hasChanges()) {
+        SourceWriter writer(false);
+        writer.writeFile(file, result.modified_content);
     }
 
     return result;
@@ -295,57 +336,173 @@ AutosTool::expandAutoInst(
     return std::make_pair(repl, signals);
 }
 
-std::optional<Replacement> AutosTool::expandAutoWire(
+std::optional<Replacement> AutosTool::expandAutoInstWithAggregator(
     const std::string& content,
-    const AutoWire& autowire,
-    const std::vector<ExpandedSignal>& all_signals) {
+    const AutoInst& autoinst,
+    const AutoParser& parser,
+    SignalAggregator& aggregator) {
 
-    // Filter signals to those from instances after this AUTOWIRE
-    // (In full implementation, would check line numbers)
-    std::vector<ExpandedSignal> relevant_signals;
-    for (const auto& sig : all_signals) {
-        // For now, include all output signals
-        if (sig.direction == "output") {
-            relevant_signals.push_back(sig);
-        }
+    // Find instance info
+    auto info = findInstanceInfoFromAutoinst(content, autoinst.source_offset);
+    if (!info) {
+        diagnostics_.addWarning(
+            "Could not find instance info for AUTOINST",
+            autoinst.file_path, autoinst.line_number);
+        return std::nullopt;
     }
 
-    // Find existing declarations
-    auto existing = findExistingDeclarations(content, autowire.source_offset);
+    auto [module_type, instance_name, inst_start] = *info;
+
+    // Find closing paren
+    auto close_paren = findInstanceCloseParen(content, autoinst.end_offset);
+    if (!close_paren) {
+        diagnostics_.addWarning(
+            "Could not find closing paren for instance",
+            autoinst.file_path, autoinst.line_number);
+        return std::nullopt;
+    }
+
+    // Get module ports
+    auto ports = getModulePorts(module_type);
+
+    // If no ports found (module not in compilation), preserve existing content
+    if (ports.empty()) {
+        diagnostics_.addWarning(
+            "No ports found for module '" + module_type + "', preserving existing content",
+            autoinst.file_path, autoinst.line_number);
+        return std::nullopt;
+    }
+
+    // Find manual ports
+    auto manual_ports = findManualPorts(content, autoinst.source_offset);
+
+    // Find template
+    auto* tmpl = parser.getTemplateForModule(module_type, autoinst.line_number);
 
     // Detect indent
-    std::string indent = detectIndent(content, autowire.source_offset);
+    std::string indent = detectIndent(content, autoinst.source_offset);
+    if (indent.empty()) {
+        indent = options_.indent;
+    }
+
+    // Create expander and expand
+    AutoInstExpander expander(tmpl, &diagnostics_);
+    std::string expansion = expander.expand(
+        instance_name,
+        ports,
+        manual_ports,
+        autoinst.filter_pattern.value_or(""),
+        indent,
+        options_.alignment);
+
+    // Add connections to aggregator
+    aggregator.addFromInstance(instance_name, expander.connections(), ports);
+
+    // Create replacement
+    Replacement repl;
+    repl.start = autoinst.end_offset;
+    repl.end = *close_paren;
+    repl.new_text = expansion;
+    repl.description = "AUTOINST for " + instance_name;
+
+    return repl;
+}
+
+std::optional<Replacement> AutosTool::expandAutoReg(
+    const std::string& content,
+    const AutoReg& autoreg,
+    const std::vector<NetInfo>& module_outputs,
+    const SignalAggregator& aggregator,
+    const std::set<std::string>& user_decls) {
+
+    // Detect indent
+    std::string indent = detectIndent(content, autoreg.source_offset);
     if (indent.empty()) {
         indent = options_.indent;
     }
 
     // Expand
-    AutoWireExpander expander(&diagnostics_);
-    std::string expansion = expander.expand(relevant_signals, existing, indent);
+    AutoRegExpander expander(&diagnostics_);
+    std::string expansion = expander.expand(
+        module_outputs, aggregator, user_decls, "logic", indent, PortGrouping::ByDirection);
 
     if (expansion.empty()) {
         return std::nullopt;
     }
 
-    // Find end of existing AUTOWIRE region
-    // Look for "// End of automatic wires" or next statement
-    size_t end_offset = autowire.end_offset;
-
-    auto end_marker = content.find("// End of automatic wires", autowire.end_offset);
-    if (end_marker != std::string::npos) {
-        // Include the marker line
-        auto line_end = content.find('\n', end_marker);
-        end_offset = (line_end != std::string::npos) ? line_end + 1 : content.length();
-    }
+    // Find end of existing AUTOREG region
+    size_t end_offset = findAutoBlockEnd(content, autoreg.end_offset, "regs");
 
     // Create replacement
     Replacement repl;
-    repl.start = autowire.end_offset;
+    repl.start = autoreg.end_offset;
     repl.end = end_offset;
     repl.new_text = expansion;
-    repl.description = "AUTOWIRE";
+    repl.description = "AUTOREG";
 
     return repl;
+}
+
+size_t AutosTool::findAutoBlockEnd(const std::string& content, size_t start, [[maybe_unused]] const std::string& marker_suffix) {
+    // Look for the standard end marker (verilog-mode compatible)
+    std::string end_marker = "// End of automatics";
+    auto marker_pos = content.find(end_marker, start);
+
+    if (marker_pos != std::string::npos) {
+        // Include the marker line
+        auto line_end = content.find('\n', marker_pos);
+        return (line_end != std::string::npos) ? line_end + 1 : content.length();
+    }
+
+    // No marker found, just return start position
+    return start;
+}
+
+std::string AutosTool::applyAutowireRewriter(
+    const std::string& content,
+    const SignalAggregator& aggregator,
+    const std::set<std::string>& user_decls) {
+
+    using namespace slang::syntax;
+
+    // Parse content with slang
+    auto tree = SyntaxTree::fromText(content);
+    if (!tree) {
+        diagnostics_.addWarning("Failed to parse content for AUTOWIRE rewriting");
+        return content;
+    }
+
+    // Create rewriter and transform
+    AutowireRewriter rewriter(aggregator, user_decls, true /* use_logic */);
+    auto new_tree = rewriter.transform(tree);
+
+    // Convert back to text
+    std::string result = SyntaxPrinter::printFile(*new_tree);
+
+    // Remove the dummy marker localparam that was added to preserve the end comment trivia
+    const std::string dummy_marker = "localparam _SLANG_AUTOS_END_MARKER_ = 0;";
+    size_t pos = result.find(dummy_marker);
+    while (pos != std::string::npos) {
+        // Find the start of the line
+        size_t line_start = result.rfind('\n', pos);
+        line_start = (line_start == std::string::npos) ? 0 : line_start + 1;
+
+        // Find the end of the line
+        size_t line_end = result.find('\n', pos);
+        if (line_end != std::string::npos) {
+            line_end++;  // Include the newline
+        } else {
+            line_end = result.length();
+        }
+
+        // Remove the line (keeping only whitespace before the marker if it's just indentation)
+        result.erase(line_start, line_end - line_start);
+
+        // Look for more occurrences
+        pos = result.find(dummy_marker);
+    }
+
+    return result;
 }
 
 } // namespace slang_autos

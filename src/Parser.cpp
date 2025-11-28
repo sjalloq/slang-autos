@@ -4,6 +4,8 @@
 #include <regex>
 #include <sstream>
 
+#include "slang-autos/Expander.h"  // For PortGrouping enum
+
 // slang includes
 #include "slang/syntax/SyntaxTree.h"
 #include "slang/syntax/SyntaxVisitor.h"
@@ -66,6 +68,26 @@ struct TriviaCollector : public slang::syntax::SyntaxVisitor<TriviaCollector> {
                 // Check for AUTOWIRE
                 else if (raw_text.find("AUTOWIRE") != std::string_view::npos) {
                     parser.processBlockComment(raw_text, file_path, line, col, offset, "AUTOWIRE");
+                }
+                // Check for AUTOREG
+                else if (raw_text.find("AUTOREG") != std::string_view::npos) {
+                    parser.processBlockComment(raw_text, file_path, line, col, offset, "AUTOREG");
+                }
+                // Check for AUTOPORTS
+                else if (raw_text.find("AUTOPORTS") != std::string_view::npos) {
+                    parser.processBlockComment(raw_text, file_path, line, col, offset, "AUTOPORTS");
+                }
+                // Check for AUTOINPUT
+                else if (raw_text.find("AUTOINPUT") != std::string_view::npos) {
+                    parser.processBlockComment(raw_text, file_path, line, col, offset, "AUTOINPUT");
+                }
+                // Check for AUTOOUTPUT
+                else if (raw_text.find("AUTOOUTPUT") != std::string_view::npos) {
+                    parser.processBlockComment(raw_text, file_path, line, col, offset, "AUTOOUTPUT");
+                }
+                // Check for AUTOINOUT
+                else if (raw_text.find("AUTOINOUT") != std::string_view::npos) {
+                    parser.processBlockComment(raw_text, file_path, line, col, offset, "AUTOINOUT");
                 }
             }
 
@@ -154,6 +176,15 @@ std::optional<AutoTemplate> Re2TemplateParser::parseTemplate(
         std::string port_pattern = (*rule_it)[1].str();
         std::string signal_expr = (*rule_it)[2].str();
 
+        // Strip trailing comma from signal expression (verilog-mode compatibility)
+        if (!signal_expr.empty() && signal_expr.back() == ',') {
+            signal_expr.pop_back();
+            // Also trim any trailing whitespace that was before the comma
+            while (!signal_expr.empty() && std::isspace(signal_expr.back())) {
+                signal_expr.pop_back();
+            }
+        }
+
         // Validate port pattern is valid regex
         try {
             std::regex test_re(port_pattern);
@@ -241,6 +272,51 @@ void AutoParser::processBlockComment(
         if (autowire) {
             autowires_.push_back(std::move(*autowire));
         }
+    }
+    else if (comment_type == "AUTOREG") {
+        AutoReg autoreg;
+        autoreg.file_path = file_path;
+        autoreg.line_number = line;
+        autoreg.column = col;
+        autoreg.source_offset = offset;
+        autoreg.end_offset = offset + raw_text.length();
+        autoregs_.push_back(std::move(autoreg));
+    }
+    else if (comment_type == "AUTOPORTS") {
+        AutoPorts autoports;
+        autoports.file_path = file_path;
+        autoports.line_number = line;
+        autoports.column = col;
+        autoports.source_offset = offset;
+        autoports.end_offset = offset + raw_text.length();
+        autoports_.push_back(std::move(autoports));
+    }
+    else if (comment_type == "AUTOINPUT") {
+        AutoInput autoinput;
+        autoinput.file_path = file_path;
+        autoinput.line_number = line;
+        autoinput.column = col;
+        autoinput.source_offset = offset;
+        autoinput.end_offset = offset + raw_text.length();
+        autoinputs_.push_back(std::move(autoinput));
+    }
+    else if (comment_type == "AUTOOUTPUT") {
+        AutoOutput autooutput;
+        autooutput.file_path = file_path;
+        autooutput.line_number = line;
+        autooutput.column = col;
+        autooutput.source_offset = offset;
+        autooutput.end_offset = offset + raw_text.length();
+        autooutputs_.push_back(std::move(autooutput));
+    }
+    else if (comment_type == "AUTOINOUT") {
+        AutoInout autoinout;
+        autoinout.file_path = file_path;
+        autoinout.line_number = line;
+        autoinout.column = col;
+        autoinout.source_offset = offset;
+        autoinout.end_offset = offset + raw_text.length();
+        autoinouts_.push_back(std::move(autoinout));
     }
 }
 
@@ -341,10 +417,71 @@ void AutoParser::clear() {
     templates_.clear();
     autoinsts_.clear();
     autowires_.clear();
+    autoregs_.clear();
+    autoports_.clear();
+    autoinputs_.clear();
+    autooutputs_.clear();
+    autoinouts_.clear();
 }
 
 void AutoParser::setTemplateParser(std::unique_ptr<ITemplateParser> parser) {
     template_parser_ = std::move(parser);
+}
+
+// ============================================================================
+// Inline Configuration Parser
+// ============================================================================
+
+InlineConfig parseInlineConfig(const std::string& content) {
+    InlineConfig config;
+
+    // Pattern: // slang-autos-KEY: VALUES
+    // We look for single-line comments with the slang-autos- prefix
+    static const std::regex config_re(
+        R"re(//\s*slang-autos-(\w+)\s*:\s*(.+)$)re",
+        std::regex::multiline);
+
+    auto begin = std::sregex_iterator(content.begin(), content.end(), config_re);
+    auto end = std::sregex_iterator();
+
+    for (std::sregex_iterator it = begin; it != end; ++it) {
+        std::smatch match = *it;
+        std::string key = match[1].str();
+        std::string value = match[2].str();
+
+        // Trim trailing whitespace from value
+        while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back()))) {
+            value.pop_back();
+        }
+
+        if (key == "libdir") {
+            // Split value by whitespace
+            std::istringstream iss(value);
+            std::string dir;
+            while (iss >> dir) {
+                config.libdirs.push_back(dir);
+            }
+        } else if (key == "libext") {
+            // Split value by whitespace
+            std::istringstream iss(value);
+            std::string ext;
+            while (iss >> ext) {
+                config.libext.push_back(ext);
+            }
+        } else if (key == "grouping") {
+            if (value == "alphabetical" || value == "alpha") {
+                config.grouping = PortGrouping::Alphabetical;
+            } else if (value == "direction" || value == "bydirection") {
+                config.grouping = PortGrouping::ByDirection;
+            }
+            // Unknown values are silently ignored for forward compatibility
+        } else {
+            // Store as custom option
+            config.custom_options[key] = value;
+        }
+    }
+
+    return config;
 }
 
 } // namespace slang_autos

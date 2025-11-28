@@ -6,6 +6,12 @@
 
 namespace slang_autos {
 
+/// Strictness mode for error handling
+enum class StrictnessMode {
+    Strict,     ///< Error on missing modules, undefined parameters
+    Lenient     ///< Warn and continue with best-effort expansion
+};
+
 /// Diagnostic severity level
 enum class DiagnosticLevel {
     Warning,

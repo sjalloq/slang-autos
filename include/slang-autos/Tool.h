@@ -10,6 +10,7 @@
 #include "Expander.h"
 #include "Parser.h"
 #include "Writer.h"
+#include "AutowireRewriter.h"
 
 // Forward declarations for slang types
 namespace slang {
@@ -19,11 +20,7 @@ namespace ast { class Compilation; }
 
 namespace slang_autos {
 
-/// Strictness mode for error handling
-enum class StrictnessMode {
-    Strict,     ///< Error on missing modules, undefined parameters
-    Lenient     ///< Warn and continue with best-effort expansion
-};
+// StrictnessMode is defined in Diagnostics.h
 
 /// Result of expanding a single file
 struct ExpansionResult {
@@ -96,18 +93,42 @@ private:
     /// Extract port information for a module from compilation
     std::vector<PortInfo> getModulePorts(const std::string& module_name);
 
-    /// Expand a single AUTOINST and return the replacement + expanded signals
+    /// Expand a single AUTOINST and collect into SignalAggregator
+    /// @return Replacement if successful, nullopt otherwise
+    std::optional<Replacement>
+    expandAutoInstWithAggregator(
+        const std::string& content,
+        const AutoInst& autoinst,
+        const AutoParser& parser,
+        SignalAggregator& aggregator);
+
+    /// Expand a single AUTOINST and return the replacement + expanded signals (legacy)
     std::optional<std::pair<Replacement, std::vector<ExpandedSignal>>>
     expandAutoInst(
         const std::string& content,
         const AutoInst& autoinst,
         const AutoParser& parser);
 
-    /// Expand a single AUTOWIRE and return the replacement
-    std::optional<Replacement> expandAutoWire(
+    /// Expand AUTOREG
+    std::optional<Replacement> expandAutoReg(
         const std::string& content,
-        const AutoWire& autowire,
-        const std::vector<ExpandedSignal>& all_signals);
+        const AutoReg& autoreg,
+        const std::vector<NetInfo>& module_outputs,
+        const SignalAggregator& aggregator,
+        const std::set<std::string>& user_decls);
+
+    /// Find end of an AUTO block (looks for "// End of automatic..." marker)
+    size_t findAutoBlockEnd(const std::string& content, size_t start, const std::string& marker_suffix);
+
+    /// Apply AUTOWIRE expansion using SyntaxRewriter
+    /// @param content The content (after AUTOINST expansion)
+    /// @param aggregator Signals collected from AUTOINST expansions
+    /// @param user_decls User-declared signals to skip
+    /// @return Modified content with AUTOWIRE expanded
+    std::string applyAutowireRewriter(
+        const std::string& content,
+        const SignalAggregator& aggregator,
+        const std::set<std::string>& user_decls);
 
     Options options_;
     DiagnosticCollector diagnostics_;

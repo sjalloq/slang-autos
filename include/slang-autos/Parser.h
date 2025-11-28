@@ -5,11 +5,33 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include "Diagnostics.h"
 
 namespace slang_autos {
+
+// Forward declaration
+enum class PortGrouping;
+
+/// Inline configuration parsed from file comments.
+/// Supports verilog-mode style local variables in comments:
+///   // slang-autos-libdir: ./lib ./lib2
+///   // slang-autos-libext: .v .sv
+///   // slang-autos-grouping: alphabetical
+struct InlineConfig {
+    std::vector<std::string> libdirs;   ///< Library directories (-y equivalents)
+    std::vector<std::string> libext;    ///< File extensions (+libext+ equivalents)
+    std::optional<PortGrouping> grouping; ///< Port grouping preference
+    std::unordered_map<std::string, std::string> custom_options; ///< Other options
+
+    /// Check if any configuration was found
+    [[nodiscard]] bool empty() const {
+        return libdirs.empty() && libext.empty() && !grouping.has_value()
+               && custom_options.empty();
+    }
+};
 
 /// A single port mapping rule in a template.
 /// Maps port names (via pattern) to signal expressions.
@@ -63,6 +85,66 @@ struct AutoWire {
     AutoWire() = default;
 };
 
+/// Represents an AUTOREG comment location.
+/// Marks where automatic reg declarations should be generated.
+struct AutoReg {
+    std::string file_path;
+    size_t line_number = 0;
+    size_t column = 0;
+    size_t source_offset = 0;
+    size_t end_offset = 0;
+
+    AutoReg() = default;
+};
+
+/// Represents an AUTOPORTS comment location (ANSI-style port list).
+/// Generates combined input/output/inout declarations inside module port list.
+struct AutoPorts {
+    std::string file_path;
+    size_t line_number = 0;
+    size_t column = 0;
+    size_t source_offset = 0;
+    size_t end_offset = 0;
+
+    AutoPorts() = default;
+};
+
+/// Represents an AUTOINPUT comment location.
+/// Marks where automatic input declarations should be generated.
+struct AutoInput {
+    std::string file_path;
+    size_t line_number = 0;
+    size_t column = 0;
+    size_t source_offset = 0;
+    size_t end_offset = 0;
+
+    AutoInput() = default;
+};
+
+/// Represents an AUTOOUTPUT comment location.
+/// Marks where automatic output declarations should be generated.
+struct AutoOutput {
+    std::string file_path;
+    size_t line_number = 0;
+    size_t column = 0;
+    size_t source_offset = 0;
+    size_t end_offset = 0;
+
+    AutoOutput() = default;
+};
+
+/// Represents an AUTOINOUT comment location.
+/// Marks where automatic inout declarations should be generated.
+struct AutoInout {
+    std::string file_path;
+    size_t line_number = 0;
+    size_t column = 0;
+    size_t source_offset = 0;
+    size_t end_offset = 0;
+
+    AutoInout() = default;
+};
+
 /// Abstract interface for template parsers.
 /// Allows different syntax implementations (RE2 vs verilog-mode).
 class ITemplateParser {
@@ -102,7 +184,7 @@ private:
 
 /// Parser for AUTO comments in SystemVerilog source files.
 /// Uses slang's trivia API to find block comments and parses
-/// AUTO_TEMPLATE, AUTOINST, and AUTOWIRE comments.
+/// AUTO_TEMPLATE, AUTOINST, AUTOWIRE, AUTOREG, AUTOPORTS, etc.
 class AutoParser {
 public:
     explicit AutoParser(DiagnosticCollector* diagnostics = nullptr);
@@ -121,6 +203,21 @@ public:
 
     /// Get all parsed AUTOWIRE comments
     [[nodiscard]] const std::vector<AutoWire>& autowires() const { return autowires_; }
+
+    /// Get all parsed AUTOREG comments
+    [[nodiscard]] const std::vector<AutoReg>& autoregs() const { return autoregs_; }
+
+    /// Get all parsed AUTOPORTS comments
+    [[nodiscard]] const std::vector<AutoPorts>& autoports() const { return autoports_; }
+
+    /// Get all parsed AUTOINPUT comments
+    [[nodiscard]] const std::vector<AutoInput>& autoinputs() const { return autoinputs_; }
+
+    /// Get all parsed AUTOOUTPUT comments
+    [[nodiscard]] const std::vector<AutoOutput>& autooutputs() const { return autooutputs_; }
+
+    /// Get all parsed AUTOINOUT comments
+    [[nodiscard]] const std::vector<AutoInout>& autoinouts() const { return autoinouts_; }
 
     /// Find the nearest template for a module, searching backward from a line.
     /// @param module_name Module type to find template for
@@ -171,6 +268,22 @@ private:
     std::vector<AutoTemplate> templates_;
     std::vector<AutoInst> autoinsts_;
     std::vector<AutoWire> autowires_;
+    std::vector<AutoReg> autoregs_;
+    std::vector<AutoPorts> autoports_;
+    std::vector<AutoInput> autoinputs_;
+    std::vector<AutoOutput> autooutputs_;
+    std::vector<AutoInout> autoinouts_;
 };
+
+// ============================================================================
+// Inline Configuration Parser
+// ============================================================================
+
+/// Parse inline configuration from file content.
+/// Searches for comments matching the pattern: // slang-autos-KEY: VALUES
+/// Typically placed at the end of a file, similar to verilog-mode's local variables.
+/// @param content File content to parse
+/// @return Parsed configuration (may be empty if no config comments found)
+[[nodiscard]] InlineConfig parseInlineConfig(const std::string& content);
 
 } // namespace slang_autos

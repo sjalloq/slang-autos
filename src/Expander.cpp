@@ -277,7 +277,466 @@ std::string AutoWireExpander::expand(
         oss << sig->signal_name << ";\n";
     }
 
-    oss << indent << "// End of automatic wires\n";
+    oss << indent << "// End of automatics\n";
+
+    return oss.str();
+}
+
+std::string AutoWireExpander::expandFromAggregator(
+    const SignalAggregator& aggregator,
+    const std::set<std::string>& existing_decls,
+    const std::string& type_str,
+    const std::string& indent,
+    PortGrouping grouping) {
+
+    // Get all nets driven by instances
+    std::vector<NetInfo> driven_nets = aggregator.getInstanceDrivenNets();
+
+    // Filter out already-declared signals
+    std::vector<NetInfo> to_declare;
+    for (const auto& net : driven_nets) {
+        if (existing_decls.find(net.name) == existing_decls.end()) {
+            to_declare.push_back(net);
+        }
+    }
+
+    if (to_declare.empty()) {
+        return "";
+    }
+
+    // Sort according to grouping preference
+    if (grouping == PortGrouping::Alphabetical) {
+        std::sort(to_declare.begin(), to_declare.end(),
+            [](const NetInfo& a, const NetInfo& b) { return a.name < b.name; });
+    }
+    // For ByDirection, we keep the original order (which comes from instance traversal)
+    // In AUTOWIRE context, there's no direction grouping since these are all wires
+
+    std::ostringstream oss;
+    oss << "\n" << indent << "// Beginning of automatic wires\n";
+
+    for (const auto& net : to_declare) {
+        oss << indent << type_str;
+
+        std::string range = net.getRangeStr();
+        if (!range.empty()) {
+            oss << " " << range;
+        }
+
+        oss << " " << net.name << ";\n";
+    }
+
+    oss << indent << "// End of automatics\n";
+
+    return oss.str();
+}
+
+// ============================================================================
+// SignalAggregator Implementation
+// ============================================================================
+
+void SignalAggregator::addFromInstance(
+    const std::string& inst_name,
+    const std::vector<PortConnection>& connections,
+    const std::vector<PortInfo>& ports) {
+
+    for (const auto& conn : connections) {
+        // Skip unconnected and constant ports
+        if (conn.is_unconnected || conn.is_constant) {
+            continue;
+        }
+
+        // Find the port info to get width
+        auto port_it = std::find_if(ports.begin(), ports.end(),
+            [&](const PortInfo& p) { return p.name == conn.port_name; });
+
+        if (port_it == ports.end()) {
+            continue;
+        }
+
+        const std::string& net_name = conn.signal_expr;
+        int port_width = port_it->width;
+
+        // Get or create net usage entry
+        auto& usage = nets_[net_name];
+        if (usage.info.name.empty()) {
+            usage.info.name = net_name;
+            usage.info.width = port_width;
+            if (port_width > 1) {
+                usage.info.msb = port_width - 1;
+                usage.info.lsb = 0;
+            }
+        } else {
+            // Merge - take max width
+            usage.info.merge(port_width);
+        }
+
+        // Track instance source
+        if (std::find(usage.source_instances.begin(), usage.source_instances.end(), inst_name)
+            == usage.source_instances.end()) {
+            usage.source_instances.push_back(inst_name);
+        }
+
+        // Track direction usage
+        if (conn.direction == "output") {
+            usage.driven_by_instance = true;
+        } else if (conn.direction == "input") {
+            usage.consumed_by_instance = true;
+        } else if (conn.direction == "inout") {
+            usage.driven_by_instance = true;
+            usage.consumed_by_instance = true;
+            inout_nets_.insert(net_name);
+        }
+    }
+}
+
+std::vector<NetInfo> SignalAggregator::getInstanceDrivenNets() const {
+    std::vector<NetInfo> result;
+    for (const auto& [name, usage] : nets_) {
+        if (usage.driven_by_instance) {
+            result.push_back(usage.info);
+        }
+    }
+    return result;
+}
+
+std::vector<NetInfo> SignalAggregator::getExternalInputNets() const {
+    std::vector<NetInfo> result;
+    for (const auto& [name, usage] : nets_) {
+        // External input: consumed by instance input but NOT driven by any instance output
+        if (usage.consumed_by_instance && !usage.driven_by_instance) {
+            result.push_back(usage.info);
+        }
+    }
+    return result;
+}
+
+std::vector<NetInfo> SignalAggregator::getExternalOutputNets() const {
+    std::vector<NetInfo> result;
+    for (const auto& [name, usage] : nets_) {
+        // External output: driven by instance output but NOT consumed by any instance input
+        // Also exclude inouts
+        if (usage.driven_by_instance && !usage.consumed_by_instance &&
+            inout_nets_.find(name) == inout_nets_.end()) {
+            result.push_back(usage.info);
+        }
+    }
+    return result;
+}
+
+std::vector<NetInfo> SignalAggregator::getInoutNets() const {
+    std::vector<NetInfo> result;
+    for (const auto& net_name : inout_nets_) {
+        auto it = nets_.find(net_name);
+        if (it != nets_.end()) {
+            result.push_back(it->second.info);
+        }
+    }
+    return result;
+}
+
+std::optional<int> SignalAggregator::getNetWidth(const std::string& name) const {
+    auto it = nets_.find(name);
+    if (it != nets_.end()) {
+        return it->second.info.width;
+    }
+    return std::nullopt;
+}
+
+bool SignalAggregator::isDrivenByInstance(const std::string& name) const {
+    auto it = nets_.find(name);
+    if (it != nets_.end()) {
+        return it->second.driven_by_instance;
+    }
+    return false;
+}
+
+std::set<std::string> SignalAggregator::getInstanceDrivenNetNames() const {
+    std::set<std::string> result;
+    for (const auto& [name, usage] : nets_) {
+        if (usage.driven_by_instance) {
+            result.insert(name);
+        }
+    }
+    return result;
+}
+
+// ============================================================================
+// AutoRegExpander Implementation
+// ============================================================================
+
+AutoRegExpander::AutoRegExpander(DiagnosticCollector* diagnostics)
+    : diagnostics_(diagnostics) {
+}
+
+std::string AutoRegExpander::expand(
+    const std::vector<NetInfo>& module_outputs,
+    const SignalAggregator& aggregator,
+    const std::set<std::string>& existing_decls,
+    const std::string& type_str,
+    const std::string& indent,
+    PortGrouping grouping) {
+
+    // Get nets driven by instances (these are NOT autoreg candidates)
+    std::set<std::string> instance_driven = aggregator.getInstanceDrivenNetNames();
+
+    // Find outputs that need reg declarations:
+    // - Must be a module output
+    // - Not driven by any instance
+    // - Not already declared by user
+    std::vector<NetInfo> to_declare;
+    for (const auto& output : module_outputs) {
+        // Skip if driven by an instance
+        if (instance_driven.find(output.name) != instance_driven.end()) {
+            continue;
+        }
+
+        // Skip if already declared
+        if (existing_decls.find(output.name) != existing_decls.end()) {
+            continue;
+        }
+
+        to_declare.push_back(output);
+    }
+
+    if (to_declare.empty()) {
+        return "";
+    }
+
+    // Sort according to grouping preference
+    if (grouping == PortGrouping::Alphabetical) {
+        std::sort(to_declare.begin(), to_declare.end(),
+            [](const NetInfo& a, const NetInfo& b) { return a.name < b.name; });
+    }
+
+    std::ostringstream oss;
+    oss << "\n" << indent << "// Beginning of automatic regs\n";
+
+    for (const auto& net : to_declare) {
+        oss << indent << type_str;
+
+        std::string range = net.getRangeStr();
+        if (!range.empty()) {
+            oss << " " << range;
+        }
+
+        oss << " " << net.name << ";\n";
+    }
+
+    oss << indent << "// End of automatic regs\n";
+
+    return oss.str();
+}
+
+// ============================================================================
+// AutoPortsExpander Implementation
+// ============================================================================
+
+AutoPortsExpander::AutoPortsExpander(DiagnosticCollector* diagnostics)
+    : diagnostics_(diagnostics) {
+}
+
+std::string AutoPortsExpander::formatPort(
+    const NetInfo& net,
+    const std::string& direction,
+    const std::string& type_str,
+    bool is_last) const {
+
+    std::ostringstream oss;
+    oss << direction << " " << type_str;
+
+    std::string range = net.getRangeStr();
+    if (!range.empty()) {
+        oss << " " << range;
+    }
+
+    oss << " " << net.name;
+
+    if (!is_last) {
+        oss << ",";
+    }
+
+    return oss.str();
+}
+
+std::string AutoPortsExpander::expand(
+    const SignalAggregator& aggregator,
+    const std::set<std::string>& existing_ports,
+    const std::string& type_str,
+    const std::string& indent,
+    PortGrouping grouping) {
+
+    // Collect all port types
+    std::vector<NetInfo> inputs = aggregator.getExternalInputNets();
+    std::vector<NetInfo> outputs = aggregator.getExternalOutputNets();
+    std::vector<NetInfo> inouts = aggregator.getInoutNets();
+
+    // Filter out existing ports
+    auto filterExisting = [&existing_ports](std::vector<NetInfo>& nets) {
+        nets.erase(std::remove_if(nets.begin(), nets.end(),
+            [&](const NetInfo& net) {
+                return existing_ports.find(net.name) != existing_ports.end();
+            }), nets.end());
+    };
+
+    filterExisting(inputs);
+    filterExisting(outputs);
+    filterExisting(inouts);
+
+    // Check if we have anything to generate
+    if (inputs.empty() && outputs.empty() && inouts.empty()) {
+        return "";
+    }
+
+    std::ostringstream oss;
+
+    if (grouping == PortGrouping::Alphabetical) {
+        // Combine all and sort alphabetically
+        std::vector<std::pair<NetInfo, std::string>> all_ports;
+        for (const auto& net : inputs) {
+            all_ports.emplace_back(net, "input");
+        }
+        for (const auto& net : outputs) {
+            all_ports.emplace_back(net, "output");
+        }
+        for (const auto& net : inouts) {
+            all_ports.emplace_back(net, "inout");
+        }
+
+        std::sort(all_ports.begin(), all_ports.end(),
+            [](const auto& a, const auto& b) { return a.first.name < b.first.name; });
+
+        oss << "\n" << indent << "// Beginning of automatic ports\n";
+        for (size_t i = 0; i < all_ports.size(); ++i) {
+            bool is_last = (i == all_ports.size() - 1);
+            oss << indent << formatPort(all_ports[i].first, all_ports[i].second, type_str, is_last) << "\n";
+        }
+        oss << indent << "// End of automatic ports\n";
+    }
+    else {
+        // Group by direction (verilog-mode style)
+        oss << "\n";
+
+        size_t total = inputs.size() + outputs.size() + inouts.size();
+        size_t count = 0;
+
+        // Outputs first
+        if (!outputs.empty()) {
+            oss << indent << "// Outputs\n";
+            for (const auto& net : outputs) {
+                ++count;
+                bool is_last = (count == total);
+                oss << indent << formatPort(net, "output", type_str, is_last) << "\n";
+            }
+        }
+
+        // Inouts second
+        if (!inouts.empty()) {
+            oss << indent << "// Inouts\n";
+            for (const auto& net : inouts) {
+                ++count;
+                bool is_last = (count == total);
+                oss << indent << formatPort(net, "inout", type_str, is_last) << "\n";
+            }
+        }
+
+        // Inputs last
+        if (!inputs.empty()) {
+            oss << indent << "// Inputs\n";
+            for (const auto& net : inputs) {
+                ++count;
+                bool is_last = (count == total);
+                oss << indent << formatPort(net, "input", type_str, is_last) << "\n";
+            }
+        }
+    }
+
+    return oss.str();
+}
+
+std::string AutoPortsExpander::expandInputs(
+    const SignalAggregator& aggregator,
+    const std::set<std::string>& existing_ports,
+    const std::string& type_str,
+    const std::string& indent) {
+
+    std::vector<NetInfo> inputs = aggregator.getExternalInputNets();
+
+    // Filter out existing ports
+    inputs.erase(std::remove_if(inputs.begin(), inputs.end(),
+        [&](const NetInfo& net) {
+            return existing_ports.find(net.name) != existing_ports.end();
+        }), inputs.end());
+
+    if (inputs.empty()) {
+        return "";
+    }
+
+    std::ostringstream oss;
+    oss << "\n" << indent << "// Beginning of automatic inputs\n";
+    for (size_t i = 0; i < inputs.size(); ++i) {
+        bool is_last = (i == inputs.size() - 1);
+        oss << indent << formatPort(inputs[i], "input", type_str, is_last) << "\n";
+    }
+    oss << indent << "// End of automatic inputs\n";
+
+    return oss.str();
+}
+
+std::string AutoPortsExpander::expandOutputs(
+    const SignalAggregator& aggregator,
+    const std::set<std::string>& existing_ports,
+    const std::string& type_str,
+    const std::string& indent) {
+
+    std::vector<NetInfo> outputs = aggregator.getExternalOutputNets();
+
+    // Filter out existing ports
+    outputs.erase(std::remove_if(outputs.begin(), outputs.end(),
+        [&](const NetInfo& net) {
+            return existing_ports.find(net.name) != existing_ports.end();
+        }), outputs.end());
+
+    if (outputs.empty()) {
+        return "";
+    }
+
+    std::ostringstream oss;
+    oss << "\n" << indent << "// Beginning of automatic outputs\n";
+    for (size_t i = 0; i < outputs.size(); ++i) {
+        bool is_last = (i == outputs.size() - 1);
+        oss << indent << formatPort(outputs[i], "output", type_str, is_last) << "\n";
+    }
+    oss << indent << "// End of automatic outputs\n";
+
+    return oss.str();
+}
+
+std::string AutoPortsExpander::expandInouts(
+    const SignalAggregator& aggregator,
+    const std::set<std::string>& existing_ports,
+    const std::string& type_str,
+    const std::string& indent) {
+
+    std::vector<NetInfo> inouts = aggregator.getInoutNets();
+
+    // Filter out existing ports
+    inouts.erase(std::remove_if(inouts.begin(), inouts.end(),
+        [&](const NetInfo& net) {
+            return existing_ports.find(net.name) != existing_ports.end();
+        }), inouts.end());
+
+    if (inouts.empty()) {
+        return "";
+    }
+
+    std::ostringstream oss;
+    oss << "\n" << indent << "// Beginning of automatic inouts\n";
+    for (size_t i = 0; i < inouts.size(); ++i) {
+        bool is_last = (i == inouts.size() - 1);
+        oss << indent << formatPort(inouts[i], "inout", type_str, is_last) << "\n";
+    }
+    oss << indent << "// End of automatic inouts\n";
 
     return oss.str();
 }

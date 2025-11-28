@@ -339,6 +339,212 @@ TEST_CASE("Integration - multiple instances of same module", "[integration]") {
 // CLI Behavior Tests (run actual binary)
 // =============================================================================
 
+// =============================================================================
+// AUTOWIRE Tests
+// =============================================================================
+
+TEST_CASE("AUTOWIRE - basic wire generation", "[integration][autowire]") {
+    auto top_sv = getFixturePath("autowire_basic/top.sv");
+    auto lib_dir = getFixturePath("autowire_basic/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+
+    CHECK(result.success);
+    // AUTOWIRE should generate declarations for instance outputs
+    CHECK(result.modified_content.find("// Beginning of automatic wires") != std::string::npos);
+    CHECK(result.modified_content.find("logic [7:0] data_out") != std::string::npos);
+    CHECK(result.modified_content.find("logic valid") != std::string::npos);
+    CHECK(result.modified_content.find("// End of automatics") != std::string::npos);
+}
+
+TEST_CASE("AUTOWIRE - skips user-declared signals", "[integration][autowire]") {
+    auto top_sv = getFixturePath("autowire_skip_declared/top.sv");
+    auto lib_dir = getFixturePath("autowire_skip_declared/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+
+    CHECK(result.success);
+    // valid is not declared, should appear in AUTOWIRE section
+    CHECK(result.modified_content.find("logic valid") != std::string::npos);
+
+    // data_out is user-declared, should NOT appear in AUTOWIRE section
+    // Check the section between markers specifically
+    auto auto_start = result.modified_content.find("// Beginning of automatic wires");
+    auto auto_end = result.modified_content.find("// End of automatics");
+    REQUIRE(auto_start != std::string::npos);
+    REQUIRE(auto_end != std::string::npos);
+    auto auto_section = result.modified_content.substr(auto_start, auto_end - auto_start);
+
+    // data_out should NOT be in the autowire section
+    CHECK(auto_section.find("data_out") == std::string::npos);
+    // valid SHOULD be in the autowire section
+    CHECK(auto_section.find("valid") != std::string::npos);
+}
+
+TEST_CASE("AUTOWIRE - width conflict resolution takes max", "[integration][autowire]") {
+    auto top_sv = getFixturePath("autowire_width_conflict/top.sv");
+    auto lib_dir = getFixturePath("autowire_width_conflict/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+
+    CHECK(result.success);
+    // shared_bus should be declared with max width [15:0], not [7:0]
+    CHECK(result.modified_content.find("logic [15:0] shared_bus") != std::string::npos);
+    CHECK(result.modified_content.find("logic [7:0] shared_bus") == std::string::npos);
+}
+
+TEST_CASE("AUTOWIRE - template rename uses new signal name", "[integration][autowire]") {
+    auto top_sv = getFixturePath("autowire_template_rename/top.sv");
+    auto lib_dir = getFixturePath("autowire_template_rename/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+
+    CHECK(result.success);
+    // Template renames data_out to renamed_signal
+    CHECK(result.modified_content.find("logic [7:0] renamed_signal") != std::string::npos);
+    // data_out should NOT appear in AUTOWIRE (it's renamed)
+    // Note: data_out appears in the template rule, so check the auto wires section specifically
+    auto auto_start = result.modified_content.find("// Beginning of automatic wires");
+    auto auto_end = result.modified_content.find("// End of automatics");
+    if (auto_start != std::string::npos && auto_end != std::string::npos) {
+        auto auto_section = result.modified_content.substr(auto_start, auto_end - auto_start);
+        CHECK(auto_section.find("data_out") == std::string::npos);
+    }
+}
+
+TEST_CASE("AUTOWIRE - constants and disconnects don't generate wires", "[integration][autowire]") {
+    auto top_sv = getFixturePath("autowire_constants/top.sv");
+    auto lib_dir = getFixturePath("autowire_constants/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+
+    CHECK(result.success);
+    // Both outputs are mapped to constants/disconnects, so AUTOWIRE should generate nothing
+    // (or just the markers with nothing between them)
+    auto auto_start = result.modified_content.find("// Beginning of automatic wires");
+    if (auto_start != std::string::npos) {
+        auto auto_end = result.modified_content.find("// End of automatics");
+        if (auto_end != std::string::npos) {
+            auto auto_section = result.modified_content.substr(auto_start, auto_end - auto_start);
+            // Should not contain any logic declarations
+            CHECK(auto_section.find("logic") == std::string::npos);
+        }
+    }
+}
+
+TEST_CASE("AUTOWIRE - inout ports generate wires", "[integration][autowire]") {
+    auto top_sv = getFixturePath("autowire_inout/top.sv");
+    auto lib_dir = getFixturePath("autowire_inout/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+
+    CHECK(result.success);
+    // inout port should generate a wire declaration
+    CHECK(result.modified_content.find("logic [7:0] bus") != std::string::npos);
+}
+
+TEST_CASE("AUTOWIRE - re-expansion replaces old content", "[integration][autowire]") {
+    auto top_sv = getFixturePath("autowire_reexpand/top.sv");
+    auto lib_dir = getFixturePath("autowire_reexpand/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+
+    CHECK(result.success);
+    // old_signal should be removed (it was in the old expansion)
+    CHECK(result.modified_content.find("old_signal") == std::string::npos);
+    // New content should be generated
+    CHECK(result.modified_content.find("data_out") != std::string::npos);
+    CHECK(result.modified_content.find("valid") != std::string::npos);
+}
+
+// =============================================================================
+// CLI Behavior Tests (run actual binary)
+// =============================================================================
+
 TEST_CASE("CLI - only positional files are expanded, not -f files", "[cli]") {
     // This tests that files from -f provide compilation context but are NOT expanded.
     // Only explicitly named positional files should be expanded.

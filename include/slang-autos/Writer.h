@@ -116,4 +116,53 @@ offsetToLine(const std::string& content, size_t offset);
 [[nodiscard]] size_t
 offsetToColumn(const std::string& content, size_t offset);
 
+// ============================================================================
+// Enhanced Declaration Scanning
+// ============================================================================
+
+/// Information about a declared signal.
+struct DeclaredSignal {
+    std::string name;       ///< Signal name
+    std::string type;       ///< Declaration type: "wire", "logic", "reg", "input", "output", "inout"
+    int width = 1;          ///< Bit width (1 for scalar)
+
+    DeclaredSignal() = default;
+    DeclaredSignal(std::string n, std::string t, int w = 1)
+        : name(std::move(n)), type(std::move(t)), width(w) {}
+};
+
+/// Find AUTO block ranges in content (to exclude from declaration scanning).
+/// Returns pairs of (start, end) byte offsets for regions that should be excluded.
+/// This includes:
+/// - "// Beginning of automatic wires" ... "// End of automatics"
+/// - Content between /*AUTOPORTS*/ and closing )
+/// @param content Source file content
+/// @return Vector of (start, end) offset pairs for AUTO blocks
+[[nodiscard]] std::vector<std::pair<size_t, size_t>>
+findAutoBlockRanges(const std::string& content);
+
+/// Find all user-declared signals in a module, excluding AUTO-generated blocks.
+/// @param content Source file content
+/// @param module_start Byte offset of module start
+/// @param module_end Byte offset of module end (or endmodule)
+/// @param exclude_ranges Ranges to exclude (from findAutoBlockRanges)
+/// @return Vector of declared signals
+[[nodiscard]] std::vector<DeclaredSignal>
+findModuleDeclarations(
+    const std::string& content,
+    size_t module_start,
+    size_t module_end,
+    const std::vector<std::pair<size_t, size_t>>& exclude_ranges);
+
+/// Check if an offset is within any of the excluded ranges.
+[[nodiscard]] bool
+isInExcludedRange(size_t offset, const std::vector<std::pair<size_t, size_t>>& ranges);
+
+/// Find the module boundary (module ... endmodule) containing an offset.
+/// @param content Source file content
+/// @param offset Byte offset within the module
+/// @return Pair of (module_start, module_end) or nullopt if not found
+[[nodiscard]] std::optional<std::pair<size_t, size_t>>
+findModuleBoundary(const std::string& content, size_t offset);
+
 } // namespace slang_autos

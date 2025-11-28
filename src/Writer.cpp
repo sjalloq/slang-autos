@@ -439,4 +439,222 @@ size_t offsetToColumn(const std::string& content, size_t offset) {
     return offset - last_newline;
 }
 
+// ============================================================================
+// Enhanced Declaration Scanning
+// ============================================================================
+
+std::vector<std::pair<size_t, size_t>>
+findAutoBlockRanges(const std::string& content) {
+    std::vector<std::pair<size_t, size_t>> ranges;
+
+    // Find "// Beginning of automatic wires" ... "// End of automatics" blocks
+    static const std::string begin_marker = "// Beginning of automatic";
+    static const std::string end_marker = "// End of automatics";
+
+    size_t pos = 0;
+    while ((pos = content.find(begin_marker, pos)) != std::string::npos) {
+        size_t block_start = pos;
+        size_t end_pos = content.find(end_marker, block_start);
+        if (end_pos != std::string::npos) {
+            // Include the end marker line
+            size_t line_end = content.find('\n', end_pos);
+            size_t block_end = (line_end != std::string::npos) ? line_end + 1 : content.length();
+            ranges.emplace_back(block_start, block_end);
+            pos = block_end;
+        } else {
+            // No end marker found, skip this
+            pos += begin_marker.length();
+        }
+    }
+
+    // Find /*AUTOPORTS*/ ... ) blocks (content generated for port list)
+    pos = 0;
+    while ((pos = content.find("/*AUTOPORTS*/", pos)) != std::string::npos) {
+        size_t block_start = pos;
+        // Find the closing ) of the module port list at depth 0
+        size_t search_pos = pos + 13;
+        int depth = 0;
+        while (search_pos < content.length()) {
+            char c = content[search_pos];
+            if (c == '(') ++depth;
+            else if (c == ')') {
+                if (depth == 0) {
+                    ranges.emplace_back(block_start, search_pos);
+                    break;
+                }
+                --depth;
+            }
+            ++search_pos;
+        }
+        pos = search_pos + 1;
+    }
+
+    // Find /*AUTOWIRE*/ ... // End of automatic wires blocks (these are already covered above)
+    // But let's also catch any /*AUTOWIRE*/ comments followed by generated content
+    pos = 0;
+    while ((pos = content.find("/*AUTOWIRE*/", pos)) != std::string::npos) {
+        // Check if there's a "// Beginning of automatic wires" nearby
+        size_t search_end = std::min(pos + 200, content.length());
+        size_t begin_pos = content.find("// Beginning of automatic wires", pos);
+        if (begin_pos != std::string::npos && begin_pos < search_end) {
+            // This is already covered by the first loop
+            pos = begin_pos + 1;
+        } else {
+            pos += 12;  // Skip /*AUTOWIRE*/
+        }
+    }
+
+    return ranges;
+}
+
+bool isInExcludedRange(size_t offset, const std::vector<std::pair<size_t, size_t>>& ranges) {
+    for (const auto& [start, end] : ranges) {
+        if (offset >= start && offset < end) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::optional<std::pair<size_t, size_t>>
+findModuleBoundary(const std::string& content, size_t offset) {
+    // Find "module " keyword - search from beginning if offset is 0, otherwise before offset
+    size_t module_pos;
+    if (offset == 0) {
+        module_pos = content.find("module ");
+    } else {
+        std::string before = content.substr(0, offset);
+        module_pos = before.rfind("module ");
+    }
+
+    if (module_pos == std::string::npos) {
+        return std::nullopt;
+    }
+
+    // Find "endmodule" after the module keyword
+    auto endmodule_pos = content.find("endmodule", module_pos);
+    if (endmodule_pos == std::string::npos) {
+        endmodule_pos = content.length();
+    }
+
+    return std::make_pair(module_pos, endmodule_pos);
+}
+
+std::vector<DeclaredSignal>
+findModuleDeclarations(
+    const std::string& content,
+    size_t module_start,
+    size_t module_end,
+    const std::vector<std::pair<size_t, size_t>>& exclude_ranges) {
+
+    std::vector<DeclaredSignal> decls;
+
+    // Extract the module region
+    std::string search_region = content.substr(module_start, module_end - module_start);
+
+    // Parse declarations: wire/logic/reg/input/output/inout [signed] [range] name [, name...];
+    // This regex captures the type, optional range, and signal name
+    static const std::regex decl_re(
+        R"(\b(wire|logic|reg|input|output|inout)\b)"   // Type keyword
+        R"(\s*(?:signed\s*)?)"                          // Optional signed
+        R"((?:\[([^\]]+)\]\s*)?)"                        // Optional range like [7:0]
+        R"((\w+))"                                       // Signal name
+        R"((?:\s*,\s*(\w+))*)"                           // Additional comma-separated names
+        R"(\s*;)"                                        // Semicolon
+    );
+
+    std::sregex_iterator it(search_region.begin(), search_region.end(), decl_re);
+    std::sregex_iterator end;
+
+    for (; it != end; ++it) {
+        // Calculate the absolute offset of this match
+        size_t match_offset = module_start + static_cast<size_t>(it->position());
+
+        // Skip if this match is in an excluded range
+        if (isInExcludedRange(match_offset, exclude_ranges)) {
+            continue;
+        }
+
+        std::string type = (*it)[1].str();
+        std::string range_str = (*it)[2].matched ? (*it)[2].str() : "";
+
+        // Parse width from range
+        int width = 1;
+        if (!range_str.empty()) {
+            // Try to extract width from range like "7:0" or "WIDTH-1:0"
+            static const std::regex range_num_re(R"((\d+)\s*:\s*(\d+))");
+            std::smatch range_match;
+            if (std::regex_search(range_str, range_match, range_num_re)) {
+                int msb = std::stoi(range_match[1].str());
+                int lsb = std::stoi(range_match[2].str());
+                width = std::abs(msb - lsb) + 1;
+            }
+        }
+
+        // First signal name
+        if ((*it)[3].matched) {
+            decls.emplace_back((*it)[3].str(), type, width);
+        }
+
+        // Additional comma-separated names (capture group 4 only gets the last one in std::regex)
+        // For now, we get the first name reliably. For multiple names, we'd need a different approach.
+    }
+
+    // Also parse ANSI-style port declarations in the module header
+    // Pattern: module name ( input logic [7:0] signal_name, ... );
+    static const std::regex ansi_port_re(
+        R"(\b(input|output|inout)\s+)"               // Direction
+        R"((?:(wire|logic|reg)\s+)?)"                 // Optional type
+        R"((?:signed\s*)?)"                           // Optional signed
+        R"((?:\[([^\]]+)\]\s*)?)"                     // Optional range
+        R"((\w+))"                                    // Signal name
+    );
+
+    // Find the module header (everything up to the first ; after module)
+    auto first_semi = search_region.find(';');
+    if (first_semi != std::string::npos) {
+        std::string header = search_region.substr(0, first_semi);
+
+        std::sregex_iterator port_it(header.begin(), header.end(), ansi_port_re);
+        std::sregex_iterator port_end;
+
+        for (; port_it != port_end; ++port_it) {
+            size_t match_offset = module_start + static_cast<size_t>(port_it->position());
+
+            if (isInExcludedRange(match_offset, exclude_ranges)) {
+                continue;
+            }
+
+            std::string direction = (*port_it)[1].str();
+            std::string range_str = (*port_it)[3].matched ? (*port_it)[3].str() : "";
+            std::string name = (*port_it)[4].str();
+
+            int width = 1;
+            if (!range_str.empty()) {
+                static const std::regex range_num_re(R"((\d+)\s*:\s*(\d+))");
+                std::smatch range_match;
+                if (std::regex_search(range_str, range_match, range_num_re)) {
+                    int msb = std::stoi(range_match[1].str());
+                    int lsb = std::stoi(range_match[2].str());
+                    width = std::abs(msb - lsb) + 1;
+                }
+            }
+
+            // Check if already in decls (avoid duplicates)
+            bool found = false;
+            for (const auto& d : decls) {
+                if (d.name == name) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                decls.emplace_back(name, direction, width);
+            }
+        }
+    }
+
+    return decls;
+}
+
 } // namespace slang_autos

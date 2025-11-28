@@ -57,6 +57,8 @@ add_library(slang-autos-lib
     src/Expander.cpp
     src/Writer.cpp
     src/Tool.cpp
+    src/AutowireRewriter.cpp
+    src/AutosRewriter.cpp
 )
 
 target_include_directories(slang-autos-lib
