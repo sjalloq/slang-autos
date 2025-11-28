@@ -86,6 +86,19 @@ MatchResult TemplateMatcher::matchPort(const PortInfo& port) {
                 // Apply substitution and evaluate any ternary expressions
                 std::string signal_name = substitute(rule.signal_expr, port, port_captures);
                 signal_name = evaluateTernary(signal_name);
+
+                // Warn if assigning a constant to an output port
+                if (diagnostics_ && port.direction == "output" &&
+                    (signal_name == "'0" || signal_name == "'1" || signal_name == "'z")) {
+                    diagnostics_->addWarning(
+                        "Constant '" + signal_name + "' assigned to output port '" + port.name +
+                        "'. Use ternary expression to handle direction, e.g.: port.input ? " +
+                        signal_name + " : _",
+                        template_ ? template_->file_path : "",
+                        template_ ? template_->line_number : 0,
+                        "constant_output");
+                }
+
                 return MatchResult(signal_name, &rule);
             }
         } catch (const std::regex_error&) {
@@ -93,6 +106,19 @@ MatchResult TemplateMatcher::matchPort(const PortInfo& port) {
             if (rule.port_pattern == port.name) {
                 std::string signal_name = substitute(rule.signal_expr, port, {});
                 signal_name = evaluateTernary(signal_name);
+
+                // Warn if assigning a constant to an output port
+                if (diagnostics_ && port.direction == "output" &&
+                    (signal_name == "'0" || signal_name == "'1" || signal_name == "'z")) {
+                    diagnostics_->addWarning(
+                        "Constant '" + signal_name + "' assigned to output port '" + port.name +
+                        "'. Use ternary expression to handle direction, e.g.: port.input ? " +
+                        signal_name + " : _",
+                        template_ ? template_->file_path : "",
+                        template_ ? template_->line_number : 0,
+                        "constant_output");
+                }
+
                 return MatchResult(signal_name, &rule);
             }
         }

@@ -204,6 +204,35 @@ TEST_CASE("TemplateMatcher - ternary expressions", "[template]") {
     }
 }
 
+TEST_CASE("TemplateMatcher - warns on constant assigned to output", "[template]") {
+    DiagnosticCollector diag;
+    AutoTemplate tmpl;
+    tmpl.module_name = "submod";
+    tmpl.rules.emplace_back(".*", "'0");
+
+    TemplateMatcher matcher(&tmpl, &diag);
+    matcher.setInstance("u_sub");
+
+    SECTION("no warning for input port") {
+        PortInfo port("data_in", "input");
+        (void)matcher.matchPort(port);
+        CHECK(diag.warningCount() == 0);
+    }
+
+    SECTION("warning for output port") {
+        PortInfo port("data_out", "output");
+        (void)matcher.matchPort(port);
+        CHECK(diag.warningCount() == 1);
+        CHECK(diag.format().find("Constant ''0' assigned to output port") != std::string::npos);
+    }
+
+    SECTION("no warning for inout port") {
+        PortInfo port("data_io", "inout");
+        (void)matcher.matchPort(port);
+        CHECK(diag.warningCount() == 0);
+    }
+}
+
 TEST_CASE("TemplateMatcher - first matching rule wins", "[template]") {
     AutoTemplate tmpl;
     tmpl.module_name = "submod";
