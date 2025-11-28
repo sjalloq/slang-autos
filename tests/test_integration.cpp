@@ -1,0 +1,336 @@
+// Integration tests for slang-autos
+// These tests exercise the full slang driver flow with real SystemVerilog files
+
+#include <catch2/catch_test_macros.hpp>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+
+#include "slang-autos/Tool.h"
+
+namespace fs = std::filesystem;
+using namespace slang_autos;
+
+// Helper to get path to test fixtures
+static fs::path getFixturePath(const std::string& relative) {
+    // Find fixtures relative to test executable or source
+    fs::path candidates[] = {
+        fs::path(__FILE__).parent_path() / "fixtures" / relative,
+        fs::current_path() / "tests" / "fixtures" / relative,
+        fs::current_path() / "fixtures" / relative,
+    };
+
+    for (const auto& path : candidates) {
+        if (fs::exists(path)) {
+            return path;
+        }
+    }
+
+    // Return first candidate for error message
+    return candidates[0];
+}
+
+// Helper to read file content
+static std::string readFile(const fs::path& path) {
+    std::ifstream ifs(path);
+    std::stringstream buffer;
+    buffer << ifs.rdbuf();
+    return buffer.str();
+}
+
+// =============================================================================
+// Library Resolution Tests (would have caught parseAllSources bug)
+// =============================================================================
+
+TEST_CASE("Integration - library module resolution via -y", "[integration]") {
+    auto top_sv = getFixturePath("simple/top.sv");
+    auto lib_dir = getFixturePath("simple/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+
+    CHECK(result.success);
+    CHECK(result.autoinst_count == 1);
+
+    // Verify port connections were generated
+    CHECK(result.modified_content.find(".clk") != std::string::npos);
+    CHECK(result.modified_content.find(".rst_n") != std::string::npos);
+    CHECK(result.modified_content.find(".data_in") != std::string::npos);
+    CHECK(result.modified_content.find(".data_out") != std::string::npos);
+}
+
+TEST_CASE("Integration - library resolution with +libext+", "[integration]") {
+    auto top_sv = getFixturePath("simple/top.sv");
+    auto lib_dir = getFixturePath("simple/lib");
+
+    REQUIRE(fs::exists(top_sv));
+
+    // Test with multiple extensions
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.v+.sv+.vh"
+    });
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, true);
+    CHECK(result.success);
+    CHECK(result.autoinst_count == 1);
+}
+
+// =============================================================================
+// Module Not Found Tests (would have caught content wiping bug)
+// =============================================================================
+
+TEST_CASE("Integration - module not found preserves content", "[integration]") {
+    auto missing_sv = getFixturePath("errors/missing_module.sv");
+
+    REQUIRE(fs::exists(missing_sv));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({missing_sv.string()});
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(missing_sv, true);
+
+    // Original content should be preserved
+    CHECK(result.original_content == result.modified_content);
+    CHECK(result.autoinst_count == 0);
+
+    // Warning should be issued
+    CHECK(tool.diagnostics().warningCount() > 0);
+}
+
+TEST_CASE("Integration - strict mode errors on missing module", "[integration]") {
+    auto missing_sv = getFixturePath("errors/missing_module.sv");
+
+    REQUIRE(fs::exists(missing_sv));
+
+    AutosTool::Options opts;
+    opts.strictness = StrictnessMode::Strict;
+
+    AutosTool tool(opts);
+    bool loaded = tool.loadWithArgs({missing_sv.string()});
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(missing_sv, true);
+
+    // In strict mode, missing module should produce error
+    CHECK(tool.diagnostics().hasErrors());
+}
+
+TEST_CASE("Integration - lenient mode warns on missing module", "[integration]") {
+    auto missing_sv = getFixturePath("errors/missing_module.sv");
+
+    REQUIRE(fs::exists(missing_sv));
+
+    AutosTool::Options opts;
+    opts.strictness = StrictnessMode::Lenient;
+
+    AutosTool tool(opts);
+    bool loaded = tool.loadWithArgs({missing_sv.string()});
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(missing_sv, true);
+
+    // In lenient mode, missing module should only warn
+    CHECK_FALSE(tool.diagnostics().hasErrors());
+    CHECK(tool.diagnostics().warningCount() > 0);
+}
+
+// =============================================================================
+// Template Tests (end-to-end template functionality)
+// =============================================================================
+
+TEST_CASE("Integration - template with @ substitution", "[integration][templates]") {
+    auto top_sv = getFixturePath("templates/top.sv");
+    auto lib_dir = getFixturePath("templates/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, true);
+
+    CHECK(result.success);
+    CHECK(result.autoinst_count == 2);
+
+    // Verify @ substitution worked (u_fifo_0 -> 0, u_fifo_1 -> 1)
+    CHECK(result.modified_content.find("data_0_in") != std::string::npos);
+    CHECK(result.modified_content.find("data_0_out") != std::string::npos);
+    CHECK(result.modified_content.find("data_1_in") != std::string::npos);
+    CHECK(result.modified_content.find("data_1_out") != std::string::npos);
+}
+
+// =============================================================================
+// EDA Argument Tests (would have caught +libext+ as file bug)
+// =============================================================================
+
+TEST_CASE("Integration - +incdir+ works", "[integration]") {
+    auto top_sv = getFixturePath("simple/top.sv");
+    auto lib_dir = getFixturePath("simple/lib");
+
+    REQUIRE(fs::exists(top_sv));
+
+    // +incdir+ should be accepted without error
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv",
+        "+incdir+" + lib_dir.string()
+    });
+
+    REQUIRE(loaded);
+}
+
+TEST_CASE("Integration - +define+ works", "[integration]") {
+    auto top_sv = getFixturePath("simple/top.sv");
+    auto lib_dir = getFixturePath("simple/lib");
+
+    REQUIRE(fs::exists(top_sv));
+
+    // +define+ should be accepted without error
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv",
+        "+define+WIDTH=8"
+    });
+
+    REQUIRE(loaded);
+}
+
+// =============================================================================
+// Error Handling Tests
+// =============================================================================
+
+TEST_CASE("Integration - nonexistent file fails gracefully", "[integration][errors]") {
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({"nonexistent_file.sv"});
+
+    // Should fail to load
+    CHECK_FALSE(loaded);
+    CHECK(tool.diagnostics().hasErrors());
+}
+
+TEST_CASE("Integration - nonexistent -f file fails", "[integration][errors]") {
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({"-f", "nonexistent.f"});
+
+    CHECK_FALSE(loaded);
+    CHECK(tool.diagnostics().hasErrors());
+}
+
+TEST_CASE("Integration - empty args fails gracefully", "[integration][errors]") {
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({});
+
+    // Empty args should fail
+    CHECK_FALSE(loaded);
+}
+
+// =============================================================================
+// Dry Run Tests
+// =============================================================================
+
+TEST_CASE("Integration - dry run does not modify content", "[integration]") {
+    auto top_sv = getFixturePath("simple/top.sv");
+    auto lib_dir = getFixturePath("simple/lib");
+
+    REQUIRE(fs::exists(top_sv));
+
+    // Read original content
+    std::string original = readFile(top_sv);
+
+    AutosTool tool;
+    tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    // Expand with dry_run=true
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+
+    CHECK(result.success);
+    CHECK(result.hasChanges());
+
+    // File should still have original content
+    std::string after = readFile(top_sv);
+    CHECK(original == after);
+}
+
+// =============================================================================
+// Multiple Instance Tests
+// =============================================================================
+
+TEST_CASE("Integration - multiple instances of same module", "[integration]") {
+    // Create a temp file with multiple instances
+    auto temp_dir = fs::temp_directory_path() / "slang_autos_test";
+    fs::create_directories(temp_dir / "lib");
+
+    // Write top module
+    auto top_path = temp_dir / "top.sv";
+    {
+        std::ofstream ofs(top_path);
+        ofs << "module top;\n"
+            << "    submod u_sub0 (/*AUTOINST*/);\n"
+            << "    submod u_sub1 (/*AUTOINST*/);\n"
+            << "    submod u_sub2 (/*AUTOINST*/);\n"
+            << "endmodule\n";
+    }
+
+    // Write submodule
+    auto sub_path = temp_dir / "lib" / "submod.sv";
+    {
+        std::ofstream ofs(sub_path);
+        ofs << "module submod(\n"
+            << "    input wire clk,\n"
+            << "    input wire rst_n\n"
+            << ");\n"
+            << "endmodule\n";
+    }
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_path.string(),
+        "-y", (temp_dir / "lib").string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_path, true);
+
+    CHECK(result.success);
+    CHECK(result.autoinst_count == 3);
+
+    // Cleanup
+    fs::remove_all(temp_dir);
+}
