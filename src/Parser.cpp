@@ -88,12 +88,13 @@ std::optional<AutoTemplate> Re2TemplateParser::parseTemplate(
     size_t line,
     size_t offset) {
 
-    // Pattern: /* module_name AUTO_TEMPLATE "instance_pattern"
+    // Pattern: /* module_name AUTO_TEMPLATE ["instance_pattern"]
     //             rule1
     //             rule2
     //          */
+    // Instance pattern is optional - when omitted, template applies to all instances
     static const std::regex header_re(
-        R"re(/\*\s*(\w+)\s+AUTO_TEMPLATE\s+"([^"]*)"\s*)re",
+        R"re(/\*\s*(\w+)\s+AUTO_TEMPLATE(?:\s+"([^"]*)")?\s*)re",
         std::regex::multiline);
 
     static const std::regex rule_re(
@@ -109,7 +110,7 @@ std::optional<AutoTemplate> Re2TemplateParser::parseTemplate(
         if (text.find("AUTO_TEMPLATE") != std::string_view::npos && diagnostics_) {
             diagnostics_->addWarning(
                 "Malformed AUTO_TEMPLATE: missing or invalid header format. "
-                "Expected: /* module_name AUTO_TEMPLATE \"instance_pattern\"",
+                "Expected: /* module_name AUTO_TEMPLATE [\"instance_pattern\"]",
                 file_path, line, "template_syntax");
         }
         return std::nullopt;

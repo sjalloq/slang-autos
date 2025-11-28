@@ -50,6 +50,23 @@ TEST_CASE("AutoParser - parse AUTO_TEMPLATE", "[parser]") {
         CHECK(parser.templates().size() == 1);
         CHECK(diag.warningCount() > 0);
     }
+
+    SECTION("Template without instance pattern") {
+        parser.parseText(R"(
+            /* submod AUTO_TEMPLATE (
+               data_in => my_data_in
+               data_out => my_data_out
+            ); */
+        )");
+
+        REQUIRE(parser.templates().size() == 1);
+        auto& tmpl = parser.templates()[0];
+        CHECK(tmpl.module_name == "submod");
+        CHECK(tmpl.instance_pattern.empty());  // No instance pattern
+        REQUIRE(tmpl.rules.size() == 2);
+        CHECK(tmpl.rules[0].port_pattern == "data_in");
+        CHECK(tmpl.rules[0].signal_expr == "my_data_in");
+    }
 }
 
 TEST_CASE("AutoParser - parse AUTOINST", "[parser]") {
