@@ -43,14 +43,8 @@ else()
     add_subdirectory(external/slang)
 endif()
 
-# CLI11 - Command line parser (header-only, fetch if not found)
+# FetchContent for dependencies
 include(FetchContent)
-FetchContent_Declare(
-    cli11
-    GIT_REPOSITORY https://github.com/CLIUtils/CLI11.git
-    GIT_TAG v2.4.2
-)
-FetchContent_MakeAvailable(cli11)
 
 # ============================================================================
 # Main Library
@@ -91,7 +85,6 @@ add_executable(slang-autos src/main.cpp)
 target_link_libraries(slang-autos
     PRIVATE
         slang-autos-lib
-        CLI11::CLI11
 )
 
 # ============================================================================

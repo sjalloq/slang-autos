@@ -334,3 +334,87 @@ TEST_CASE("Integration - multiple instances of same module", "[integration]") {
     // Cleanup
     fs::remove_all(temp_dir);
 }
+
+// =============================================================================
+// CLI Behavior Tests (run actual binary)
+// =============================================================================
+
+TEST_CASE("CLI - only positional files are expanded, not -f files", "[cli]") {
+    // This tests that files from -f provide compilation context but are NOT expanded.
+    // Only explicitly named positional files should be expanded.
+
+    auto temp_dir = fs::temp_directory_path() / "slang_autos_cli_test";
+    fs::create_directories(temp_dir);
+
+    // Create top.sv with AUTOINST
+    auto top_path = temp_dir / "top.sv";
+    {
+        std::ofstream ofs(top_path);
+        ofs << "module top;\n"
+            << "    submod u_sub0 (/*AUTOINST*/);\n"
+            << "endmodule\n";
+    }
+
+    // Create other.sv with AUTOINST (this should NOT be expanded)
+    auto other_path = temp_dir / "other.sv";
+    {
+        std::ofstream ofs(other_path);
+        ofs << "module other;\n"
+            << "    submod u_sub1 (/*AUTOINST*/);\n"
+            << "endmodule\n";
+    }
+
+    // Create submod.sv (the module being instantiated)
+    auto submod_path = temp_dir / "submod.sv";
+    {
+        std::ofstream ofs(submod_path);
+        ofs << "module submod(\n"
+            << "    input wire clk,\n"
+            << "    input wire rst_n\n"
+            << ");\n"
+            << "endmodule\n";
+    }
+
+    // Create a file list that includes other.sv and submod.sv
+    auto filelist_path = temp_dir / "files.f";
+    {
+        std::ofstream ofs(filelist_path);
+        ofs << other_path.string() << "\n";
+        ofs << submod_path.string() << "\n";
+    }
+
+    // Record original content of other.sv
+    std::string other_original = readFile(other_path);
+
+    // Run CLI: expand only top.sv, use -f for context
+    // Note: test runs from build/tests/, binary is in build/
+    std::string cmd = "../slang-autos " + top_path.string() +
+                      " -f " + filelist_path.string() + " 2>&1";
+    FILE* pipe = popen(cmd.c_str(), "r");
+    REQUIRE(pipe != nullptr);
+
+    char buffer[256];
+    std::string output;
+    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+        output += buffer;
+    }
+    int ret = pclose(pipe);
+
+    // Command should succeed
+    CHECK(WEXITSTATUS(ret) == 0);
+
+    // Output should mention top.sv was changed
+    CHECK(output.find("top.sv") != std::string::npos);
+    CHECK(output.find("1 AUTOINST") != std::string::npos);
+
+    // other.sv should NOT have been modified
+    std::string other_after = readFile(other_path);
+    CHECK(other_original == other_after);
+
+    // top.sv SHOULD have been modified (has port connections now)
+    std::string top_after = readFile(top_path);
+    CHECK(top_after.find(".clk") != std::string::npos);
+
+    // Cleanup
+    fs::remove_all(temp_dir);
+}

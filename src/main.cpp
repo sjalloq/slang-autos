@@ -1,174 +1,188 @@
 #include <iostream>
 #include <filesystem>
-#include <vector>
-#include <string>
 
-#include <CLI/CLI.hpp>
+#include "slang/driver/Driver.h"
+#include "slang/ast/Compilation.h"
+#include "slang/util/VersionInfo.h"
 
 #include "slang-autos/Tool.h"
 #include "slang-autos/Writer.h"
 
+using namespace slang;
+using namespace slang::driver;
 using namespace slang_autos;
 
+namespace fs = std::filesystem;
+
+// Valid Verilog/SystemVerilog extensions
+static bool isValidExtension(const fs::path& path) {
+    auto ext = path.extension().string();
+    return ext == ".v" || ext == ".sv" || ext == ".vh" || ext == ".svh";
+}
+
 int main(int argc, char* argv[]) {
-    CLI::App app{"slang-autos - SystemVerilog AUTO macro expander"};
-    app.set_version_flag("--version", "0.1.0");
+    Driver driver;
+    driver.addStandardArgs();
 
     // ========================================================================
-    // CLI Options
+    // Identify positional files for expansion (before slang parses argv)
+    // ========================================================================
+    // We scan argv to find files that will be expanded. These are:
+    // - Not options (don't start with '-')
+    // - Not EDA-style options (don't start with '+')
+    // - Have valid Verilog/SystemVerilog extensions
+    // - Actually exist on the filesystem
+    //
+    // This doesn't duplicate slang's parsing - we're just identifying which
+    // of the positional arguments are files we should expand.
     // ========================================================================
 
-    // Files to process
-    std::vector<std::string> files;
-    app.add_option("files", files, "SystemVerilog files to process");
+    std::vector<fs::path> filesToExpand;
 
-    // File list option
-    std::vector<std::string> file_lists;
-    app.add_option("-f,--file-list", file_lists, "File list (.f file)")
-        ->check(CLI::ExistingFile);
+    for (int i = 1; i < argc; ++i) {
+        std::string_view arg(argv[i]);
 
-    // Library directories
-    std::vector<std::string> lib_dirs;
-    app.add_option("-y,--library-dir", lib_dirs, "Library directory for module lookup");
+        // Skip options (start with '-' or '+')
+        if (arg.starts_with('-') || arg.starts_with('+')) {
+            continue;
+        }
 
-    // Include directories
-    std::vector<std::string> inc_dirs;
-    app.add_option("-I,--include-dir", inc_dirs, "Include directory for `include");
+        // Check if this is a valid Verilog/SystemVerilog file to expand
+        fs::path path(arg);
+
+        // Must exist and have valid extension to be expanded
+        // (other positional args like module names for --top are left for slang)
+        if (fs::exists(path) && isValidExtension(path)) {
+            filesToExpand.push_back(path);
+        }
+    }
+
+    // ========================================================================
+    // slang-autos specific options (added to slang's command line parser)
+    // ========================================================================
+
+    std::optional<bool> showHelp;
+    std::optional<bool> showVersion;
+    driver.cmdLine.add("-h,--help", showHelp, "Display available options");
+    driver.cmdLine.add("--version", showVersion, "Display version information and exit");
 
     // Output modes
-    bool dry_run = false;
-    app.add_flag("--dry-run", dry_run, "Show changes without modifying files");
-
-    bool diff_mode = false;
-    app.add_flag("--diff", diff_mode, "Output unified diff instead of modifying");
+    std::optional<bool> dryRun;
+    std::optional<bool> diffMode;
+    driver.cmdLine.add("--dry-run", dryRun, "Show changes without modifying files");
+    driver.cmdLine.add("--diff", diffMode, "Output unified diff instead of modifying");
 
     // Strictness
-    bool strict_mode = false;
-    app.add_flag("--strict", strict_mode, "Error on missing modules (default: warn and continue)");
+    std::optional<bool> strictMode;
+    driver.cmdLine.add("--strict", strictMode,
+                       "Error on missing modules (default: warn and continue)");
 
     // Formatting options
-    int indent_spaces = 4;
-    app.add_option("--indent", indent_spaces, "Indentation width in spaces (default: 4)");
+    std::optional<uint32_t> indentSpaces;
+    driver.cmdLine.add("--indent", indentSpaces,
+                       "Indentation width in spaces (default: 4)", "<width>");
 
-    bool no_alignment = false;
-    app.add_flag("--no-alignment", no_alignment, "Don't align port names");
+    std::optional<bool> noAlignment;
+    driver.cmdLine.add("--no-alignment", noAlignment, "Don't align port names");
 
-    // Verbosity: default is 1, -v increases, -q sets to 0
-    int verbose_count = 0;
-    app.add_flag("-v,--verbose", verbose_count, "Increase verbosity (can be repeated)");
-
-    bool quiet = false;
-    app.add_flag("-q,--quiet", quiet, "Suppress non-error output");
-
-    // Config file
-    std::string config_file;
-    app.add_option("--config", config_file, "Configuration file (.slang-autos.toml)")
-        ->check(CLI::ExistingFile);
+    // Verbosity (note: -v is used by slang for library files, so we only use long form)
+    std::optional<bool> verbose;
+    std::optional<bool> quiet;
+    driver.cmdLine.add("--verbose", verbose, "Increase verbosity");
+    driver.cmdLine.add("-q,--quiet", quiet, "Suppress non-error output");
 
     // ========================================================================
-    // EDA-style options (passed through to slang)
+    // Parse command line
     // ========================================================================
 
-    // These are captured as remaining args and passed to slang
-    std::vector<std::string> extra_args;
-    app.allow_extras();
+    if (!driver.parseCommandLine(argc, argv))
+        return 1;
 
-    // ========================================================================
-    // Parse
-    // ========================================================================
+    if (showHelp == true) {
+        OS::print(driver.cmdLine.getHelpText("slang-autos - SystemVerilog AUTO macro expander"));
+        return 0;
+    }
 
-    CLI11_PARSE(app, argc, argv);
+    if (showVersion == true) {
+        OS::print(fmt::format("slang-autos version 0.1.0 (slang {}.{}.{}+{})\n",
+                              VersionInfo::getMajor(), VersionInfo::getMinor(),
+                              VersionInfo::getPatch(), std::string(VersionInfo::getHash())));
+        return 0;
+    }
 
-    // Collect extra args (EDA-style options)
-    extra_args = app.remaining();
+    if (!driver.processOptions())
+        return 2;
 
-    // Compute verbosity: default 1, -v adds, -q sets to 0
-    int verbosity = quiet ? 0 : (1 + verbose_count);
+    // Always ignore unknown modules - we don't need leaf cells elaborated
+    driver.options.compilationFlags[ast::CompilationFlags::IgnoreUnknownModules] = true;
 
     // ========================================================================
     // Build tool options
     // ========================================================================
 
+    int verbosity = quiet.value_or(false) ? 0 : (verbose.value_or(false) ? 2 : 1);
+
     AutosTool::Options options;
-    options.strictness = strict_mode ? StrictnessMode::Strict : StrictnessMode::Lenient;
-    options.alignment = !no_alignment;
-    options.indent = std::string(indent_spaces, ' ');
+    options.strictness = strictMode.value_or(false) ? StrictnessMode::Strict
+                                                    : StrictnessMode::Lenient;
+    options.alignment = !noAlignment.value_or(false);
+    options.indent = std::string(indentSpaces.value_or(4), ' ');
     options.verbosity = verbosity;
 
     // ========================================================================
-    // Build slang args
+    // Check for files to expand
     // ========================================================================
 
-    std::vector<std::string> slang_args;
-
-    // Add files
-    for (const auto& file : files) {
-        slang_args.push_back(file);
-    }
-
-    // Add file lists
-    for (const auto& f : file_lists) {
-        slang_args.push_back("-f");
-        slang_args.push_back(f);
-    }
-
-    // Add library directories
-    for (const auto& dir : lib_dirs) {
-        slang_args.push_back("-y");
-        slang_args.push_back(dir);
-    }
-
-    // Add include directories
-    for (const auto& dir : inc_dirs) {
-        slang_args.push_back("+incdir+" + dir);
-    }
-
-    // Add EDA-style extra args
-    for (const auto& arg : extra_args) {
-        slang_args.push_back(arg);
-    }
-
-    // ========================================================================
-    // Run tool
-    // ========================================================================
-
-    if (files.empty() && file_lists.empty()) {
-        std::cerr << "Error: No input files specified\n";
-        std::cerr << "Run with --help for usage information\n";
+    if (filesToExpand.empty()) {
+        OS::printE("error: no input files specified\n");
+        OS::printE("Run with --help for usage information\n");
         return 1;
     }
 
-    AutosTool tool(options);
+    // ========================================================================
+    // Parse all sources (syntax trees are reused across compilations)
+    // ========================================================================
 
-    // Load design
-    if (!tool.loadWithArgs(slang_args)) {
-        std::cerr << tool.diagnostics().format();
-        return 1;
-    }
+    if (!driver.parseAllSources())
+        return 3;
 
-    // Process each file
+    // ========================================================================
+    // Run AUTO expansion (per-file compilation with --top set to filename)
+    // ========================================================================
+
+    bool dry_run = dryRun.value_or(false);
+    bool diff_mode = diffMode.value_or(false);
+
     int total_autoinst = 0;
     int total_autowire = 0;
     int files_changed = 0;
     bool any_errors = false;
 
-    for (const auto& file : files) {
-        std::filesystem::path path(file);
-
-        if (!std::filesystem::exists(path)) {
-            std::cerr << "Error: File not found: " << file << "\n";
-            any_errors = true;
-            continue;
-        }
-
+    for (const auto& path : filesToExpand) {
         if (verbosity >= 2) {
-            std::cout << "Processing: " << file << "\n";
+            OS::print(fmt::format("Processing: {}\n", path.string()));
         }
+
+        // Set --top to the filename (e.g., "foo.sv" -> "foo")
+        // This limits elaboration scope to just this module
+        driver.options.topModules = {path.stem().string()};
+
+        // Create compilation with this top module (reuses parsed syntax trees)
+        auto compilation = driver.createCompilation();
+
+        // Expand autos in this file
+        AutosTool tool(options);
+        tool.setCompilation(std::move(compilation));
 
         auto result = tool.expandFile(path, dry_run || diff_mode);
 
         if (!result.success) {
             any_errors = true;
+            // Print diagnostics for this file
+            if (tool.diagnostics().hasErrors() ||
+                (verbosity >= 1 && tool.diagnostics().warningCount() > 0)) {
+                OS::printE(tool.diagnostics().format());
+            }
             continue;
         }
 
@@ -180,28 +194,27 @@ int main(int argc, char* argv[]) {
 
             if (diff_mode) {
                 SourceWriter writer(true);
-                std::cout << writer.generateDiff(path, result.original_content, result.modified_content);
+                OS::print(writer.generateDiff(path, result.original_content,
+                                              result.modified_content));
             } else if (verbosity >= 1) {
-                std::cout << file << ": "
-                          << result.autoinst_count << " AUTOINST, "
-                          << result.autowire_count << " AUTOWIRE\n";
+                OS::print(fmt::format("{}: {} AUTOINST, {} AUTOWIRE\n",
+                                      path.string(), result.autoinst_count,
+                                      result.autowire_count));
             }
         }
-    }
 
-    // Print diagnostics
-    if (tool.diagnostics().hasErrors() || (verbosity >= 1 && tool.diagnostics().warningCount() > 0)) {
-        std::cerr << tool.diagnostics().format();
+        // Print diagnostics for this file (warnings even on success)
+        if (verbosity >= 1 && tool.diagnostics().warningCount() > 0) {
+            OS::printE(tool.diagnostics().format());
+        }
     }
 
     // Print summary
     if (verbosity >= 1 && !diff_mode) {
-        std::cout << "\nSummary: "
-                  << files_changed << " file(s) "
-                  << (dry_run ? "would be " : "") << "changed, "
-                  << total_autoinst << " AUTOINST, "
-                  << total_autowire << " AUTOWIRE\n";
+        OS::print(fmt::format("\nSummary: {} file(s) {}changed, {} AUTOINST, {} AUTOWIRE\n",
+                              files_changed, dry_run ? "would be " : "",
+                              total_autoinst, total_autowire));
     }
 
-    return any_errors || tool.diagnostics().hasErrors() ? 1 : 0;
+    return any_errors ? 1 : 0;
 }

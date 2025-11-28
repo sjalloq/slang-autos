@@ -70,6 +70,10 @@ public:
     /// @return true if loading succeeded
     bool loadWithArgs(const std::vector<std::string>& args);
 
+    /// Set a pre-created compilation (alternative to loadWithArgs).
+    /// Used when the driver is managed externally (e.g., by main.cpp).
+    void setCompilation(std::unique_ptr<slang::ast::Compilation> compilation);
+
     /// Expand all AUTO macros in a file.
     /// @param file Path to the file to expand
     /// @param dry_run If true, don't modify the file

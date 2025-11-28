@@ -54,15 +54,21 @@ bool AutosTool::loadWithArgs(const std::vector<std::string>& args) {
         return false;
     }
 
-    // Create compilation
-    compilation_ = std::make_unique<slang::ast::Compilation>();
-
-    // Add all syntax trees from driver
-    for (auto& tree : driver_->syntaxTrees) {
-        compilation_->addSyntaxTree(tree);
+    // Parse all sources (including library files on demand)
+    if (!driver_->parseAllSources()) {
+        diagnostics_.addError("Failed to parse sources");
+        return false;
     }
 
+    // Create compilation using driver (properly handles library resolution)
+    compilation_ = driver_->createCompilation();
+
     return true;
+}
+
+void AutosTool::setCompilation(std::unique_ptr<slang::ast::Compilation> compilation) {
+    compilation_ = std::move(compilation);
+    port_cache_.clear();  // Clear cache when compilation changes
 }
 
 ExpansionResult AutosTool::expandFile(
