@@ -129,3 +129,48 @@ TEST_CASE("TemplateMatcher - first matching rule wins", "[template]") {
 
     CHECK(result.signal_name == "first_match");
 }
+
+TEST_CASE("TemplateMatcher - @ alias for %1", "[template]") {
+    AutoTemplate tmpl;
+    tmpl.module_name = "submod";
+    tmpl.instance_pattern = "u_sub_(\\d+)";
+    tmpl.rules.emplace_back("data", "data_@");
+
+    TemplateMatcher matcher(&tmpl);
+    matcher.setInstance("u_sub_5");
+
+    PortInfo port("data", "input", 8);
+    auto result = matcher.matchPort(port);
+
+    CHECK(result.signal_name == "data_5");
+}
+
+TEST_CASE("TemplateMatcher - default pattern extracts first number", "[template]") {
+    AutoTemplate tmpl;
+    tmpl.module_name = "submod";
+    tmpl.instance_pattern = "";  // Empty = use default pattern
+    tmpl.rules.emplace_back("data", "data_@");
+
+    TemplateMatcher matcher(&tmpl);
+
+    SECTION("Number at end") {
+        matcher.setInstance("u_sub_42");
+        PortInfo port("data", "input");
+        auto result = matcher.matchPort(port);
+        CHECK(result.signal_name == "data_42");
+    }
+
+    SECTION("Number in middle") {
+        matcher.setInstance("ms2m");
+        PortInfo port("data", "input");
+        auto result = matcher.matchPort(port);
+        CHECK(result.signal_name == "data_2");
+    }
+
+    SECTION("Multiple numbers - first one wins") {
+        matcher.setInstance("u_inst123_abc456");
+        PortInfo port("data", "input");
+        auto result = matcher.matchPort(port);
+        CHECK(result.signal_name == "data_123");
+    }
+}

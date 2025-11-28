@@ -31,14 +31,22 @@ bool TemplateMatcher::setInstance(const std::string& instance_name) {
     }
 
     // Match instance name against template's instance pattern
+    // Default pattern extracts first number from instance name (verilog-mode compatible)
     try {
-        if (template_->instance_pattern.empty()) {
+        std::smatch match;
+        bool use_default = template_->instance_pattern.empty();
+
+        if (use_default) {
+            // Default: search for first number anywhere in instance name
+            std::regex default_pattern("([0-9]+)");
+            if (std::regex_search(instance_name, match, default_pattern)) {
+                inst_captures_.push_back(match[1].str());
+            }
             return true;
         }
 
+        // User-provided pattern: match entire instance name
         std::regex pattern(template_->instance_pattern);
-        std::smatch match;
-
         if (std::regex_match(instance_name, match, pattern)) {
             // Extract capture groups (skip match[0] which is full match)
             for (size_t i = 1; i < match.size(); ++i) {
@@ -125,6 +133,7 @@ std::string TemplateMatcher::substitute(
     }
 
     // Substitute instance captures: %1, %2, ... or %{1}, %{2}, ...
+    // Also support @ as alias for %1 (verilog-mode compatibility)
     for (size_t i = 0; i < inst_captures_.size(); ++i) {
         std::string var = "%" + std::to_string(i + 1);
         std::string var_brace = "%{" + std::to_string(i + 1) + "}";
@@ -135,6 +144,13 @@ std::string TemplateMatcher::substitute(
         }
         while ((pos = result.find(var)) != std::string::npos) {
             result.replace(pos, var.length(), inst_captures_[i]);
+        }
+
+        // @ is alias for %1 (first instance capture)
+        if (i == 0) {
+            while ((pos = result.find('@')) != std::string::npos) {
+                result.replace(pos, 1, inst_captures_[0]);
+            }
         }
     }
 
@@ -170,7 +186,8 @@ std::string TemplateMatcher::substitute(
     }
 
     // Check for unresolved substitution variables and warn
-    static const std::regex unresolved_re(R"((\$\{?\d+\}?|%\{?\d+\}?))");
+    // Include @ as instance capture variable
+    static const std::regex unresolved_re(R"((\$\{?\d+\}?|%\{?\d+\}?|@))");
     std::sregex_iterator it(result.begin(), result.end(), unresolved_re);
     std::sregex_iterator end;
 
@@ -194,7 +211,8 @@ std::string TemplateMatcher::substitute(
                     diagnostics_->addWarning(
                         "Unresolved instance capture '" + var +
                         "' for instance '" + inst_name_ +
-                        "'. Check that your instance pattern has enough capture groups.",
+                        "'. Check that your instance pattern has enough capture groups "
+                        "(@ requires a number in the instance name).",
                         template_ ? template_->file_path : "",
                         template_ ? template_->line_number : 0,
                         "unresolved_capture");
