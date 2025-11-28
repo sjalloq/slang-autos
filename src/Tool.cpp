@@ -32,6 +32,9 @@ bool AutosTool::loadWithArgs(const std::vector<std::string>& args) {
     // Create driver
     driver_ = std::make_unique<slang::driver::Driver>();
 
+    // Register standard slang options (-f, -y, +incdir+, etc.)
+    driver_->addStandardArgs();
+
     // Convert args to argc/argv style
     std::vector<const char*> argv;
     argv.push_back("slang-autos");  // Program name

@@ -5,6 +5,7 @@ add_executable(slang-autos-tests
     test_template_matcher.cpp
     test_expander.cpp
     test_writer.cpp
+    test_tool.cpp
 )
 
 target_link_libraries(slang-autos-tests
