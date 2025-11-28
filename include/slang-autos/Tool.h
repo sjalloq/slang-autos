@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "Diagnostics.h"
@@ -39,19 +40,22 @@ struct ExpansionResult {
     }
 };
 
+/// Configuration options for AutosTool
+struct AutosToolOptions {
+    StrictnessMode strictness = StrictnessMode::Lenient;
+    bool alignment = true;      ///< Align port names in output
+    std::string indent = "    ";///< Indentation string
+    int verbosity = 0;          ///< 0=quiet, 1=normal, 2=verbose, 3=debug
+};
+
 /// Main orchestrator for AUTO macro expansion.
 /// Coordinates parsing, template matching, expansion, and file writing.
 class AutosTool {
 public:
-    /// Configuration options
-    struct Options {
-        StrictnessMode strictness = StrictnessMode::Lenient;
-        bool alignment = true;      ///< Align port names in output
-        std::string indent = "    ";///< Indentation string
-        int verbosity = 0;          ///< 0=quiet, 1=normal, 2=verbose, 3=debug
-    };
+    using Options = AutosToolOptions;
 
-    explicit AutosTool(const Options& options = {});
+    AutosTool();
+    explicit AutosTool(const Options& options);
     ~AutosTool();
 
     // Non-copyable, movable
@@ -105,6 +109,9 @@ private:
     DiagnosticCollector diagnostics_;
     std::unique_ptr<slang::driver::Driver> driver_;
     std::unique_ptr<slang::ast::Compilation> compilation_;
+
+    /// Cache for module port lookups (avoids repeated AST traversal)
+    std::unordered_map<std::string, std::vector<PortInfo>> port_cache_;
 };
 
 } // namespace slang_autos

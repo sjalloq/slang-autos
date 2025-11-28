@@ -1,6 +1,7 @@
 #include "slang-autos/Tool.h"
 
 #include <fstream>
+#include <set>
 #include <sstream>
 
 // slang includes
@@ -8,9 +9,15 @@
 #include "slang/ast/Compilation.h"
 #include "slang/ast/symbols/InstanceSymbols.h"
 #include "slang/ast/symbols/PortSymbols.h"
+#include "slang/ast/symbols/CompilationUnitSymbols.h"
 #include "slang/ast/types/Type.h"
+#include "slang/ast/types/AllTypes.h"
 
 namespace slang_autos {
+
+AutosTool::AutosTool()
+    : options_{} {
+}
 
 AutosTool::AutosTool(const Options& options)
     : options_(options) {
@@ -118,36 +125,92 @@ ExpansionResult AutosTool::expandFile(
 }
 
 std::vector<PortInfo> AutosTool::getModulePorts(const std::string& module_name) {
+    // Check cache first
+    auto cache_it = port_cache_.find(module_name);
+    if (cache_it != port_cache_.end()) {
+        return cache_it->second;
+    }
+
     std::vector<PortInfo> ports;
 
     if (!compilation_) {
         return ports;
     }
 
-    // Find the module definition
-    auto* def = compilation_->tryGetDefinition(module_name);
-    if (!def) {
+    // Get the root and find instances of the target module
+    // In typical usage, we compile the target file as top, so submodules
+    // are direct children of the top instance(s)
+    auto& root = compilation_->getRoot();
+
+    const slang::ast::InstanceBodySymbol* found_body = nullptr;
+
+    // Iterate top instances (typically just the module being processed)
+    for (auto* topInst : root.topInstances) {
+        // Look in the top module's body for instances of target module
+        for (auto& member : topInst->body.members()) {
+            if (auto* inst = member.as_if<slang::ast::InstanceSymbol>()) {
+                if (inst->body.name == module_name) {
+                    found_body = &inst->body;
+                    break;
+                }
+            }
+        }
+        if (found_body) break;
+    }
+
+    if (!found_body) {
         if (options_.strictness == StrictnessMode::Strict) {
             diagnostics_.addError("Module not found: " + module_name);
         } else {
             diagnostics_.addWarning("Module not found: " + module_name);
         }
+        // Cache empty result to avoid repeated failed lookups
+        port_cache_[module_name] = ports;
         return ports;
     }
 
-    // Get instance body to access ports
-    // We need to create a temporary instantiation to get the body
-    auto& root = compilation_->getRoot();
+    // Extract ports from the body's port list
+    for (auto* port : found_body->getPortList()) {
+        PortInfo info;
+        info.name = std::string(port->name);
 
-    // Search for any instance of this module
-    for (auto* inst : root.topInstances) {
-        // This is a simplified approach - may need refinement
-        // to handle all cases correctly
+        // Get direction
+        if (auto* portSym = port->as_if<slang::ast::PortSymbol>()) {
+            switch (portSym->direction) {
+                case slang::ast::ArgumentDirection::In:
+                    info.direction = "input";
+                    break;
+                case slang::ast::ArgumentDirection::Out:
+                    info.direction = "output";
+                    break;
+                case slang::ast::ArgumentDirection::InOut:
+                    info.direction = "inout";
+                    break;
+                default:
+                    info.direction = "input";
+                    break;
+            }
+
+            // Get type information
+            auto& type = portSym->getType();
+            info.width = type.getBitWidth();
+
+            // Get range string for packed arrays
+            if (type.isPackedArray()) {
+                auto& packed = type.getCanonicalType().as<slang::ast::PackedArrayType>();
+                auto range = packed.range;
+                info.range_str = "[" + std::to_string(range.left) + ":" +
+                                std::to_string(range.right) + "]";
+            } else if (info.width > 1) {
+                info.range_str = "[" + std::to_string(info.width - 1) + ":0]";
+            }
+        }
+
+        ports.push_back(info);
     }
 
-    // For now, get ports from definition directly
-    // (This is a placeholder - actual implementation needs more work)
-
+    // Cache result for future lookups
+    port_cache_[module_name] = ports;
     return ports;
 }
 

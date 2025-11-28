@@ -27,12 +27,12 @@ TEST_CASE("AutoParser - parse AUTO_TEMPLATE", "[parser]") {
     }
 
     SECTION("Template with capture groups") {
-        parser.parseText(R"(
+        parser.parseText(R"sv(
             /* fifo AUTO_TEMPLATE "u_fifo_(\d+)"
                din => fifo_%1_din
                dout => fifo_%1_dout
             */
-        )");
+        )sv");
 
         REQUIRE(parser.templates().size() == 1);
         auto& tmpl = parser.templates()[0];

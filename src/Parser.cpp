@@ -1,7 +1,7 @@
 #include "slang-autos/Parser.h"
 
-#include <regex>
 #include <fstream>
+#include <regex>
 #include <sstream>
 
 // slang includes
@@ -11,6 +11,68 @@
 #include "slang/text/SourceManager.h"
 
 namespace slang_autos {
+
+// ============================================================================
+// TriviaCollector - SyntaxVisitor for collecting AUTO comments from trivia
+// ============================================================================
+
+struct TriviaCollector : public slang::syntax::SyntaxVisitor<TriviaCollector> {
+    AutoParser& parser;
+    const std::string& source_text;
+    const std::string& file_path;
+
+    TriviaCollector(AutoParser& p, const std::string& src, const std::string& path)
+        : parser(p), source_text(src), file_path(path) {}
+
+    void visitToken(slang::parsing::Token token) {
+        auto token_offset = token.location().offset();
+
+        // Calculate trivia start by summing trivia lengths
+        size_t trivia_total_len = 0;
+        for (const auto& trivia : token.trivia()) {
+            trivia_total_len += trivia.getRawText().length();
+        }
+        size_t current_offset = token_offset - trivia_total_len;
+
+        for (const auto& trivia : token.trivia()) {
+            std::string_view raw_text = trivia.getRawText();
+
+            if (trivia.kind == slang::parsing::TriviaKind::BlockComment) {
+                size_t offset = current_offset;
+
+                // Calculate line/column from offset
+                size_t line = 1;
+                size_t col = 1;
+                if (!source_text.empty() && offset < source_text.length()) {
+                    // Count newlines to get line number
+                    for (size_t i = 0; i < offset; ++i) {
+                        if (source_text[i] == '\n') {
+                            ++line;
+                        }
+                    }
+                    // Find column
+                    auto last_newline = source_text.rfind('\n', offset);
+                    col = (last_newline == std::string::npos) ? offset + 1 : offset - last_newline;
+                }
+
+                // Check for AUTO_TEMPLATE
+                if (raw_text.find("AUTO_TEMPLATE") != std::string_view::npos) {
+                    parser.processBlockComment(raw_text, file_path, line, col, offset, "AUTO_TEMPLATE");
+                }
+                // Check for AUTOINST
+                else if (raw_text.find("AUTOINST") != std::string_view::npos) {
+                    parser.processBlockComment(raw_text, file_path, line, col, offset, "AUTOINST");
+                }
+                // Check for AUTOWIRE
+                else if (raw_text.find("AUTOWIRE") != std::string_view::npos) {
+                    parser.processBlockComment(raw_text, file_path, line, col, offset, "AUTOWIRE");
+                }
+            }
+
+            current_offset += raw_text.length();
+        }
+    }
+};
 
 // ============================================================================
 // Re2TemplateParser Implementation
@@ -31,7 +93,7 @@ std::optional<AutoTemplate> Re2TemplateParser::parseTemplate(
     //             rule2
     //          */
     static const std::regex header_re(
-        R"(/\*\s*(\w+)\s+AUTO_TEMPLATE\s+"([^"]*)"\s*)",
+        R"re(/\*\s*(\w+)\s+AUTO_TEMPLATE\s+"([^"]*)"\s*)re",
         std::regex::multiline);
 
     static const std::regex rule_re(
@@ -148,70 +210,37 @@ void AutoParser::processTree(const std::string& source_text, const std::string& 
     // Parse with slang to get syntax tree
     auto tree = slang::syntax::SyntaxTree::fromText(source_text);
 
-    // Visitor to find all tokens and their trivia
-    struct TriviaVisitor {
-        const std::string& source;
-        const std::string& file;
-        AutoParser& parser;
+    // Use SyntaxVisitor with visitToken() - cleaner and more efficient than manual recursion
+    TriviaCollector collector(*this, source_text, file_path);
+    tree->root().visit(collector);
+}
 
-        void visit(const slang::syntax::SyntaxNode& node) {
-            // Visit children first
-            for (size_t i = 0; i < node.getChildCount(); ++i) {
-                auto child = node.childNode(i);
-                if (child) {
-                    visit(*child);
-                }
-            }
+void AutoParser::processBlockComment(
+    std::string_view raw_text,
+    const std::string& file_path,
+    size_t line,
+    size_t col,
+    size_t offset,
+    const std::string& comment_type) {
 
-            // Check tokens
-            auto token = node.getFirstToken();
-            if (token) {
-                processToken(*token);
-            }
+    if (comment_type == "AUTO_TEMPLATE") {
+        auto tmpl = template_parser_->parseTemplate(raw_text, file_path, line, offset);
+        if (tmpl) {
+            templates_.push_back(std::move(*tmpl));
         }
-
-        void processToken(const slang::parsing::Token& token) {
-            // Get trivia attached to this token
-            for (const auto& trivia : token.trivia()) {
-                if (trivia.kind == slang::parsing::TriviaKind::BlockComment) {
-                    auto raw_text = trivia.getRawText();
-
-                    // Calculate offset and line
-                    // Note: trivia location is complex in slang, using simplified approach
-                    size_t offset = 0;  // TODO: Get actual offset from slang
-                    size_t line = 1;    // TODO: Calculate from offset
-
-                    // Check for AUTO_TEMPLATE
-                    if (raw_text.find("AUTO_TEMPLATE") != std::string_view::npos) {
-                        auto tmpl = parser.template_parser_->parseTemplate(
-                            raw_text, file, line, offset);
-                        if (tmpl) {
-                            parser.templates_.push_back(std::move(*tmpl));
-                        }
-                    }
-                    // Check for AUTOINST
-                    else if (raw_text.find("AUTOINST") != std::string_view::npos) {
-                        auto autoinst = parser.parseAutoInst(
-                            raw_text, file, line, 0, offset);
-                        if (autoinst) {
-                            parser.autoinsts_.push_back(std::move(*autoinst));
-                        }
-                    }
-                    // Check for AUTOWIRE
-                    else if (raw_text.find("AUTOWIRE") != std::string_view::npos) {
-                        auto autowire = parser.parseAutoWire(
-                            raw_text, file, line, 0, offset);
-                        if (autowire) {
-                            parser.autowires_.push_back(std::move(*autowire));
-                        }
-                    }
-                }
-            }
+    }
+    else if (comment_type == "AUTOINST") {
+        auto autoinst = parseAutoInst(raw_text, file_path, line, col, offset);
+        if (autoinst) {
+            autoinsts_.push_back(std::move(*autoinst));
         }
-    };
-
-    TriviaVisitor visitor{source_text, file_path, *this};
-    visitor.visit(tree->root());
+    }
+    else if (comment_type == "AUTOWIRE") {
+        auto autowire = parseAutoWire(raw_text, file_path, line, col, offset);
+        if (autowire) {
+            autowires_.push_back(std::move(*autowire));
+        }
+    }
 }
 
 std::optional<AutoInst> AutoParser::parseAutoInst(
@@ -223,7 +252,7 @@ std::optional<AutoInst> AutoParser::parseAutoInst(
 
     // Pattern: /*AUTOINST*/ or /*AUTOINST("filter")*/
     static const std::regex autoinst_re(
-        R"(/\*AUTOINST(?:\s*\(\s*"([^"]*)"\s*\))?\s*\*/)");
+        R"re(/\*AUTOINST(?:\s*\(\s*"([^"]*)"\s*\))?\s*\*/)re");
 
     std::string text_str(text);
     std::smatch match;

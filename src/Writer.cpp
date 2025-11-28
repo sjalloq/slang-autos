@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <fstream>
 #include <regex>
+#include <set>
 #include <sstream>
 
 namespace slang_autos {

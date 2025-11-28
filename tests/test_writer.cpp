@@ -130,7 +130,7 @@ TEST_CASE("findInstanceCloseParen - with nested parens", "[writer]") {
 }
 
 TEST_CASE("findInstanceCloseParen - ignores parens in strings", "[writer]") {
-    std::string content = R"(/*AUTOINST*/ .port("(not this)"));)";
+    std::string content = R"sv(/*AUTOINST*/ .port("(not this)"));)sv";
     size_t autoinst_end = content.find("*/") + 2;
 
     auto result = findInstanceCloseParen(content, autoinst_end);

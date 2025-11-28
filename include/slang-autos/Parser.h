@@ -136,6 +136,16 @@ public:
     /// Set the template parser implementation
     void setTemplateParser(std::unique_ptr<ITemplateParser> parser);
 
+    /// Process a block comment containing AUTO directives.
+    /// Called by TriviaCollector during syntax tree traversal.
+    void processBlockComment(
+        std::string_view raw_text,
+        const std::string& file_path,
+        size_t line,
+        size_t col,
+        size_t offset,
+        const std::string& comment_type);
+
 private:
     /// Parse AUTOINST from comment text
     std::optional<AutoInst> parseAutoInst(
