@@ -86,21 +86,28 @@ AutosRewriter::collectModuleInfo(const ModuleDeclarationSyntax& module) {
     CollectedInfo info;
     bool in_autowire_block = false;
     bool in_autoreg_block = false;
-    bool need_autowire_next = false;
     bool need_autoreg_next = false;
+    bool need_autowire_after = false;  // Track node after autowire block (for re-expansion insert point)
+    bool need_autoreg_after = false;   // Track node after autoreg block
 
     for (auto* member : module.members) {
-        // Track next node after markers
-        if (need_autowire_next && !info.autowire_next) {
-            info.autowire_next = member;
-            need_autowire_next = false;
-        }
+        // Track next node after AUTOREG marker (still needed for AUTOREG)
         if (need_autoreg_next && !info.autoreg_next) {
             info.autoreg_next = member;
             need_autoreg_next = false;
         }
 
-        // Check for AUTOINST marker
+        // Track node after autowire block ends (for re-expansion insert point)
+        if (need_autowire_after && !info.autowire_after) {
+            info.autowire_after = member;
+            need_autowire_after = false;
+        }
+        if (need_autoreg_after && !info.autoreg_after) {
+            info.autoreg_after = member;
+            need_autoreg_after = false;
+        }
+
+        // Check for AUTOINST marker (uses hasMarker for content, not just trivia)
         if (hasMarker(*member, "/*AUTOINST*/")) {
             AutoInstInfo inst_info;
             inst_info.node = member;
@@ -114,10 +121,12 @@ AutosRewriter::collectModuleInfo(const ModuleDeclarationSyntax& module) {
             }
         }
 
-        // Check for AUTOWIRE marker
-        if (hasMarker(*member, "/*AUTOWIRE*/")) {
+        // Check for AUTOWIRE marker in trivia
+        // Use hasMarkerInTrivia for more precise detection - we want to find the node
+        // whose leading trivia contains /*AUTOWIRE*/
+        if (hasMarkerInTrivia(*member, "/*AUTOWIRE*/")) {
             info.autowire_marker = member;
-            need_autowire_next = true;  // Next iteration will capture the next node
+            // Note: We no longer track autowire_next since we insert BEFORE the marker
         }
 
         // Check for AUTOREG marker
@@ -134,29 +143,38 @@ AutosRewriter::collectModuleInfo(const ModuleDeclarationSyntax& module) {
             in_autoreg_block = true;
         }
 
-        if (in_autowire_block) {
-            info.autowire_block.push_back(member);
-        }
-        if (in_autoreg_block) {
-            info.autoreg_block.push_back(member);
-        }
-
-        if (hasMarker(*member, "// End of automatics")) {
+        // Check for end marker BEFORE adding to block
+        // (so we don't add the end marker node to the block)
+        bool is_end_marker = hasMarker(*member, "// End of automatics");
+        if (is_end_marker) {
             if (in_autowire_block) {
                 in_autowire_block = false;
                 info.autowire_block_end = member;
-                // Remove the end marker from the block
-                if (!info.autowire_block.empty()) {
-                    info.autowire_block.pop_back();
-                }
+                need_autowire_after = true;
             }
             if (in_autoreg_block) {
                 in_autoreg_block = false;
                 info.autoreg_block_end = member;
-                if (!info.autoreg_block.empty()) {
-                    info.autoreg_block.pop_back();
-                }
+                need_autoreg_after = true;
             }
+        }
+
+        // Add to block only if:
+        // - Still in the block (not past end marker)
+        // - Not an AUTOINST node (handled separately, avoid conflict)
+        // - Not the end marker node itself
+        //
+        // IMPORTANT: We exclude AUTOINST nodes to avoid a slang rewriter conflict.
+        // Nodes in autowire_block get remove()'d, but AUTOINST nodes get replace()'d.
+        // A node cannot have both operations applied - slang throws:
+        //   "Node only permit one remove/replace operation"
+        // By excluding AUTOINST nodes here, they're only subject to replace().
+        bool is_autoinst = hasMarker(*member, "/*AUTOINST*/");
+        if (in_autowire_block && !is_autoinst && !is_end_marker) {
+            info.autowire_block.push_back(member);
+        }
+        if (in_autoreg_block && !is_autoinst && !is_end_marker) {
+            info.autoreg_block.push_back(member);
         }
 
         // Collect user declarations (excluding auto blocks)
@@ -350,8 +368,18 @@ void AutosRewriter::queueAutoInstExpansion(
     // Find the HierarchyInstantiation in the module
     for (auto* mod_member : mod_decl->members) {
         if (mod_member->kind == SyntaxKind::HierarchyInstantiation) {
-            // Replace the original instance with the expanded one
-            replace(*inst.node, *mod_member);
+            // TRIVIA HANDLING: We use preserveTrivia=true to keep AUTO_TEMPLATE comments
+            // that precede the instance. These comments are "leading trivia" on the
+            // instance node in slang's model.
+            //
+            // Side effect: This also preserves /*AUTOWIRE*/ if it was trivia on this node,
+            // resulting in duplicates (we also generate it in generateAutowireText()).
+            // Tool.cpp post-processing removes the duplicates.
+            //
+            // Trade-off: We accept duplicate cleanup rather than lose template comments.
+            // A cleaner solution would involve selective trivia preservation, but slang's
+            // API doesn't provide easy access to filter trivia items.
+            replace(*inst.node, *mod_member, /* preserveTrivia */ true);
             return;
         }
     }
@@ -393,7 +421,9 @@ void AutosRewriter::queueAutowireExpansion(const CollectedInfo& info) {
         return;
     }
 
-    // Find the module in the parsed result
+    // Extract all declarations from the parsed module, including the dummy end marker
+    // The dummy marker carries "// End of automatics" as its leading trivia
+    // Tool.cpp will remove the localparam line but preserve the comment
     std::vector<MemberSyntax*> decl_members;
     for (auto* mod_member : mod_decl->members) {
         decl_members.push_back(const_cast<MemberSyntax*>(mod_member));
@@ -404,32 +434,19 @@ void AutosRewriter::queueAutowireExpansion(const CollectedInfo& info) {
     }
 
     // Find where to insert
-    const MemberSyntax* insert_point = nullptr;
-
-
-    if (info.autowire_block_end) {
-        // Re-expansion: insert before the end marker (which has the "End of automatics" comment)
-        insert_point = info.autowire_block_end;
-    } else if (info.autowire_next) {
-        // Fresh expansion: insert before the next node after the marker
-        insert_point = info.autowire_next;
-    }
+    // For both fresh expansion and re-expansion, use the autowire_marker
+    // (the first node that has /*AUTOWIRE*/ or // Beginning of automatic wires in trivia)
+    // The insertBefore works even if the target node is being removed
+    const MemberSyntax* insert_point = info.autowire_marker;
 
     if (insert_point) {
         // Insert all declarations before the insertion point
         for (auto* decl : decl_members) {
             insertBefore(*insert_point, *decl);
         }
-    } else {
-        // No insertion point found (autowire marker is last node)
-        // Insert after the marker instead
-        if (info.autowire_marker) {
-            // Insert in reverse order since insertAfter puts each item right after the marker
-            for (auto it = decl_members.rbegin(); it != decl_members.rend(); ++it) {
-                insertAfter(*info.autowire_marker, **it);
-            }
-        }
     }
+    // Note: If no insert_point found (marker is last node in module), we can't easily insert.
+    // This is an edge case that would need special handling.
 }
 
 void AutosRewriter::queueAutoregExpansion(const CollectedInfo& /* info */) {
@@ -447,6 +464,19 @@ bool AutosRewriter::hasMarker(const SyntaxNode& node, std::string_view marker) c
     // Use toString() to get the full text representation and search for marker
     std::string node_text = node.toString();
     return node_text.find(marker) != std::string::npos;
+}
+
+bool AutosRewriter::hasMarkerInTrivia(const SyntaxNode& node, std::string_view marker) const {
+    // Check only the leading trivia of the first token, not the node content
+    if (auto tok = node.getFirstToken()) {
+        for (const auto& trivia : tok.trivia()) {
+            auto raw_text = trivia.getRawText();
+            if (raw_text.find(marker) != std::string_view::npos) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 std::optional<std::pair<std::string, std::string>>
@@ -695,10 +725,22 @@ std::string AutosRewriter::generateAutowireText(
     std::string indent = options_.indent;
     std::string type_str = options_.use_logic ? "logic" : "wire";
 
-    oss << "\n" << indent << "// Beginning of automatic wires\n";
+    // ════════════════════════════════════════════════════════════════════════════
+    // TRIVIA MODEL WORKAROUNDS
+    //
+    // In slang's leading-trivia model, /*AUTOWIRE*/ is trivia on the NEXT node,
+    // not a standalone entity. When we insertBefore() a node, our new content
+    // appears before that node's trivia, so /*AUTOWIRE*/ would end up AFTER our
+    // declarations - wrong!
+    //
+    // Solution: We explicitly include /*AUTOWIRE*/ in generated text. This may
+    // create duplicates (original preserved via AUTOINST's preserveTrivia), but
+    // Tool.cpp cleans those up. The result is correct marker placement.
+    // ════════════════════════════════════════════════════════════════════════════
+    oss << "\n" << indent << "/*AUTOWIRE*/\n";
+    oss << indent << "// Beginning of automatic wires\n";
 
-    for (size_t i = 0; i < to_declare.size(); ++i) {
-        const auto& net = to_declare[i];
+    for (const auto& net : to_declare) {
         oss << indent << type_str;
 
         std::string range = net.getRangeStr();
@@ -706,15 +748,23 @@ std::string AutosRewriter::generateAutowireText(
             oss << " " << range;
         }
 
-        oss << " " << net.name << ";";
-
-        if (i == to_declare.size() - 1) {
-            oss << " // End of automatics";
-        }
-        oss << "\n";
+        oss << " " << net.name << ";\n";
     }
 
-    // Add dummy marker for trivia preservation
+    // ════════════════════════════════════════════════════════════════════════════
+    // DUMMY MARKER TRICK
+    //
+    // Comments in slang must be trivia on a syntax node - they can't exist alone.
+    // To ensure "// End of automatics" survives the rewriter and appears on its
+    // own line, we create a dummy localparam that carries the comment as its
+    // leading trivia. Tool.cpp removes the dummy localparam after transformation,
+    // leaving just the comment.
+    //
+    // Alternative approaches considered:
+    // - Attach comment to next real node: complex, node may not exist or may move
+    // - Use a different syntax construct: localparam is harmless if cleanup fails
+    // ════════════════════════════════════════════════════════════════════════════
+    oss << indent << "// End of automatics\n";
     oss << indent << "localparam _SLANG_AUTOS_END_MARKER_ = 0;\n";
 
     return oss.str();

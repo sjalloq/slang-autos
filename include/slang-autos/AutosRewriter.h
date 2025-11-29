@@ -41,6 +41,25 @@ struct AutosRewriterOptions {
 /// 2. RESOLVE: Batch port lookups and signal aggregation
 /// 3. GENERATE: Create all expansions with complete knowledge
 /// 4. APPLY: transform() applies all changes atomically
+///
+/// ## Trivia Model Considerations
+///
+/// Slang uses a "leading trivia" model where comments attach to the NEXT token.
+/// This affects AUTO marker handling - see detailed comments in AutosRewriter.cpp
+/// and Tool.cpp for workarounds. Key points:
+///
+/// - AUTO markers in comments become trivia on the following syntax node
+/// - Tool.cpp performs post-processing to clean up duplicate markers
+/// - A dummy localparam anchors the "// End of automatics" comment
+///
+/// ## Known Limitations
+///
+/// - AUTOREG marker reordering: When /*AUTOREG*/ and /*AUTOWIRE*/ are both trivia
+///   on the same node, AUTOREG may end up after the AUTOWIRE block in output.
+///   This is a trivia ordering issue that would require significant work to fix.
+///
+/// - Edge case with marker at module end: If /*AUTOWIRE*/ is trivia on the last
+///   node before endmodule, insertion may not work correctly.
 class AutosRewriter : public slang::syntax::SyntaxRewriter<AutosRewriter> {
 public:
     /// Construct a rewriter with compilation context.
@@ -89,6 +108,10 @@ private:
         const slang::syntax::MemberSyntax* autowire_block_end = nullptr;
         const slang::syntax::MemberSyntax* autoreg_block_end = nullptr;
 
+        // Node after auto block (for re-expansion insert point)
+        const slang::syntax::MemberSyntax* autowire_after = nullptr;
+        const slang::syntax::MemberSyntax* autoreg_after = nullptr;
+
         // User declarations (to skip)
         std::set<std::string> existing_decls;
     };
@@ -129,8 +152,12 @@ private:
     // Helpers
     // ════════════════════════════════════════════════════════════════════════
 
-    /// Check if a node's trivia contains a specific marker.
+    /// Check if a node's text (including trivia) contains a specific marker.
     bool hasMarker(const slang::syntax::SyntaxNode& node, std::string_view marker) const;
+
+    /// Check if a node's leading trivia specifically contains a marker.
+    /// This is more precise than hasMarker() as it only checks trivia, not content.
+    bool hasMarkerInTrivia(const slang::syntax::SyntaxNode& node, std::string_view marker) const;
 
     /// Extract module type and instance name from an instance syntax node.
     std::optional<std::pair<std::string, std::string>>

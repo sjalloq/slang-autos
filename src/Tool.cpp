@@ -135,7 +135,38 @@ ExpansionResult AutosTool::expandFile(
     // Convert back to text
     result.modified_content = SyntaxPrinter::printFile(*new_tree);
 
-    // Remove the dummy marker localparam that was added to preserve trivia
+    // ════════════════════════════════════════════════════════════════════════════
+    // POST-PROCESSING WORKAROUNDS FOR SLANG'S TRIVIA MODEL
+    // ════════════════════════════════════════════════════════════════════════════
+    //
+    // Slang uses a "leading trivia" model where comments and whitespace attach to
+    // the NEXT token, not the preceding one. This creates challenges for AUTO macros:
+    //
+    //   /*AUTOWIRE*/           <-- This comment is trivia on 'sub', not standalone
+    //   sub u_0 (/*AUTOINST*/);
+    //
+    // When we replace or insert nodes, trivia doesn't always end up where we want.
+    // These text-based cleanups handle edge cases that are difficult to solve purely
+    // through syntax tree operations.
+    //
+    // FUTURE IMPROVEMENT: These workarounds could potentially be eliminated by:
+    // 1. Using slang's trivia manipulation APIs more carefully (if they exist)
+    // 2. Building a custom trivia-aware rewriter that tracks marker positions
+    // 3. Pre-processing to convert markers to actual syntax nodes before rewriting
+    //
+    // For now, the text-based approach is pragmatic and handles all known cases.
+    // ════════════════════════════════════════════════════════════════════════════
+
+    // WORKAROUND 1: Remove dummy marker localparam
+    //
+    // We generate "localparam _SLANG_AUTOS_END_MARKER_ = 0;" as an anchor for the
+    // "// End of automatics" comment. In slang's trivia model, comments must attach
+    // to a syntax node - they can't exist standalone. The dummy localparam serves as
+    // that anchor, allowing the end comment to survive the rewriter transformation.
+    // We then remove the dummy here, leaving just the comment.
+    //
+    // Alternative: Could potentially use slang's trivia APIs to attach the comment
+    // directly to the next real syntax node, but this is simpler and reliable.
     const std::string dummy_marker = "localparam _SLANG_AUTOS_END_MARKER_ = 0;";
     size_t pos = result.modified_content.find(dummy_marker);
     while (pos != std::string::npos) {
@@ -156,6 +187,128 @@ ExpansionResult AutosTool::expandFile(
 
         // Look for more occurrences
         pos = result.modified_content.find(dummy_marker);
+    }
+
+    // WORKAROUND 2: Remove duplicate /*AUTOWIRE*/ markers
+    //
+    // The /*AUTOWIRE*/ marker can appear twice in output:
+    // 1. We explicitly include it in generateAutowireText() so it appears before declarations
+    // 2. The original marker (as trivia on AUTOINST node) is preserved via preserveTrivia=true
+    //
+    // We use preserveTrivia=true on AUTOINST replacement to keep AUTO_TEMPLATE comments,
+    // but this also preserves the /*AUTOWIRE*/ that was trivia on that node. Rather than
+    // losing the template comments, we accept the duplicate and clean it up here.
+    //
+    // The first occurrence (before declarations) is kept; any after "// End of automatics"
+    // are removed as duplicates.
+    //
+    // Alternative: Could strip specific trivia items before replacement, but slang's API
+    // doesn't make selective trivia removal straightforward.
+    const std::string autowire_marker = "/*AUTOWIRE*/";
+    const std::string end_marker = "// End of automatics";
+    size_t end_pos = result.modified_content.find(end_marker);
+    if (end_pos != std::string::npos) {
+        // Look for /*AUTOWIRE*/ after the end marker
+        pos = result.modified_content.find(autowire_marker, end_pos);
+        while (pos != std::string::npos) {
+            // Find the start of the line
+            size_t line_start = result.modified_content.rfind('\n', pos);
+            line_start = (line_start == std::string::npos) ? 0 : line_start + 1;
+
+            // Find the end of the line
+            size_t line_end = result.modified_content.find('\n', pos);
+            if (line_end != std::string::npos) {
+                line_end++;  // Include the newline
+            } else {
+                line_end = result.modified_content.length();
+            }
+
+            // Check if this line contains only /*AUTOWIRE*/ (plus whitespace)
+            std::string line = result.modified_content.substr(line_start, line_end - line_start);
+            std::string trimmed = line;
+            // Simple whitespace trim
+            size_t start = trimmed.find_first_not_of(" \t\n\r");
+            size_t end = trimmed.find_last_not_of(" \t\n\r");
+            if (start != std::string::npos && end != std::string::npos) {
+                trimmed = trimmed.substr(start, end - start + 1);
+            }
+
+            if (trimmed == autowire_marker) {
+                // Remove this line (duplicate marker)
+                result.modified_content.erase(line_start, line_end - line_start);
+                // Look for more after the end marker
+                end_pos = result.modified_content.find(end_marker);
+                if (end_pos == std::string::npos) break;
+                pos = result.modified_content.find(autowire_marker, end_pos);
+            } else {
+                // Not a standalone marker, look for next
+                pos = result.modified_content.find(autowire_marker, pos + autowire_marker.length());
+            }
+        }
+    }
+
+    // WORKAROUND 3: Remove duplicate "// End of automatics" markers
+    //
+    // Similar to workaround 2, the end marker can appear twice:
+    // 1. We include it in generateAutowireText() for the fresh expansion
+    // 2. The original (from previous expansion) may be preserved as trivia
+    //
+    // On re-expansion, the old "// End of automatics" was trivia on a node that gets
+    // preserved or moved. The safest approach is to generate fresh markers and remove
+    // any duplicates here.
+    //
+    // Alternative: Track which nodes carry old auto-block trivia and strip it before
+    // transformation. This would require more complex trivia analysis.
+    const std::string end_auto_marker = "// End of automatics";
+    size_t first_end = result.modified_content.find(end_auto_marker);
+    if (first_end != std::string::npos) {
+        // Look for additional occurrences after the first
+        pos = result.modified_content.find(end_auto_marker, first_end + end_auto_marker.length());
+        while (pos != std::string::npos) {
+            // Find the start of the line
+            size_t line_start = result.modified_content.rfind('\n', pos);
+            line_start = (line_start == std::string::npos) ? 0 : line_start + 1;
+
+            // Find the end of the line
+            size_t line_end = result.modified_content.find('\n', pos);
+            if (line_end != std::string::npos) {
+                line_end++;  // Include the newline
+            } else {
+                line_end = result.modified_content.length();
+            }
+
+            // Check if this line contains only "// End of automatics" (plus whitespace)
+            std::string line = result.modified_content.substr(line_start, line_end - line_start);
+            std::string trimmed = line;
+            size_t start = trimmed.find_first_not_of(" \t\n\r");
+            size_t end = trimmed.find_last_not_of(" \t\n\r");
+            if (start != std::string::npos && end != std::string::npos) {
+                trimmed = trimmed.substr(start, end - start + 1);
+            }
+
+            if (trimmed == end_auto_marker) {
+                // Remove this line (duplicate end marker)
+                result.modified_content.erase(line_start, line_end - line_start);
+                // Continue searching from the first occurrence
+                pos = result.modified_content.find(end_auto_marker, first_end + end_auto_marker.length());
+            } else {
+                // Not a standalone marker, look for next
+                pos = result.modified_content.find(end_auto_marker, pos + end_auto_marker.length());
+            }
+        }
+    }
+
+    // WORKAROUND 4: Clean up multiple consecutive blank lines
+    //
+    // The above removals can leave behind multiple blank lines where content was stripped.
+    // We normalize to at most one blank line between content for cleaner output.
+    //
+    // This is cosmetic but improves readability of the generated output.
+    const std::string double_blank = "\n\n\n";
+    pos = result.modified_content.find(double_blank);
+    while (pos != std::string::npos) {
+        result.modified_content.replace(pos, 3, "\n\n");
+        pos = result.modified_content.find(double_blank, pos);
     }
 
     // Count expansions (for reporting)

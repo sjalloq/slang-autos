@@ -1,4 +1,5 @@
 sphinx
 sphinx-rtd-theme
 sphinx-rtd-size
+sphinxcontrib-mermaid
 
