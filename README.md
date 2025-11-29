@@ -2,12 +2,14 @@
 
 A C++ implementation of SystemVerilog AUTO macro expansion built on the [slang](https://github.com/MikePopoloski/slang) compiler.
 
-## Features
+## Why slang-autos?
 
-- **AUTOINST** - Automatic module port instantiation
-- **AUTOWIRE** - Automatic wire declaration generation
-- **AUTOPORTS** - Automatic ANSI style port declarations
-- **AUTO_TEMPLATE** - Template-based port mapping with regex support née Lisp
+`slang-autos` is a modern take on the venerable [`verilog-mode`](https://veripool.org/verilog-mode/), an Emacs major mode that offers syntax highlighting, indentation and macro expansion.  This project aims to replicate the macro expansion functionality but with the following benefits:
+
+- Full SystemVerilog parsing (macros, params, ifdefs evaluated correctly)
+- Modern C++ (no Emacs/Lisp dependency)
+- A templating engine built on top of `std::regex`
+- Standalone CLI tool as well as an LSP
 
 ## Building
 
@@ -33,8 +35,7 @@ cd build && ctest
 
 ## Usage
 
-The tool uses `slang` to resolve all modules and evaluate all macros/params.  This means,
-unlike `verilog-mode`, ports that are ifdef'd out don't appear in the instantiation.
+Pass the files you want to expand as positional arguments to `slang-autos`.  In order to avoid `slang` elaborating the full design, each positional argument that is a Verilog/SystemVerilog file is treated as the top level of the design and elaborated independently.
 
 ```bash
 # Basic usage
@@ -44,9 +45,9 @@ slang-autos design.sv
 slang-autos design.sv -y lib/ +libext+.v+.sv +incdir+include/
 
 # File list
-slang-autos -f design.f
+slang-autos design.sv -f design.f
 
-# Dry run (show changes without modifying)
+# Dry run (show change summary without modifying)
 slang-autos design.sv --dry-run
 
 # Show diff
@@ -58,13 +59,11 @@ slang-autos design.sv --strict
 
 ## Template Syntax
 
-For better or worse, the ``AUTO_TEMPLATE`` name is taken from ``verilog-mode`` where the
-inspiration for this project came from.  This might change.
+The templating system uses standard regex syntax instead of Emacs Lisp's double-escaped patterns.  This hopefully makes it easier writing rename rules. 
 
-Rather than using Lisp, ``slang-autos`` uses RE2 regex patterns with the ``=>`` operator
-implying a mapping between port name and net name.
+For better or worse, the `AUTO_TEMPLATE`, `AUTOWIRE` and `AUTOREG` names are taken from `verilog-mode` along with the addition of `AUTOPORTS` for ANSI-style port declarations.  The format should be familiar to anyone who has used `verilog-mode` in the past.  The main difference is that each rename rule is specified using the `=>` operator.  The left hands side defines the source port name and the right hand side is the regex expansion.
 
-The following snippet shows an example of the syntax:
+The following snippet gives an example of the template syntax:
 
 ```verilog
 /* module_name AUTO_TEMPLATE ["instance_pattern"]
@@ -109,10 +108,7 @@ fifo u_fifo_1 (
 );
 ```
 
-
-**Note:** I've followed the `verilog-mode` default of capturing a simple `(\d+)` for the
-instance pattern if none is given.  The `@` operator is used as an alias for `%1`.  See
-below.
+See the main [documentation](https://sjalloq.github.io/slang-autos/) for many more examples.
 
 ### Substitution Variables
 
@@ -128,15 +124,13 @@ below.
 - `_` - Unconnected port
 - `'0`, `'1`, `'z` - Constant values
 
-### Further Regex Examples
+### Arithmetic Functions
 
-```verilog
-/* module_name AUTO_TEMPLATE
-   ignored_signals_.* => port.input ? '0 : _
-   axim_(.+) => m_axi_$1
-   sig_([0-9]+)_(.*) => top_sig_$2[$1]
-*/
-```
+- `mul(a,b)` - Multiplication
+- `div(a,b)` - Divide
+- `add(a,b)` - Addition
+- `sub(a,b)` - Subtraction
+- `mod(a,b)` - Modulus
 
 ## License
 
