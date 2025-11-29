@@ -314,8 +314,11 @@ void AutosRewriter::queueAutoInstExpansion(
     const AutoInstInfo& inst,
     const std::vector<PortInfo>& ports) {
 
+    // Detect indent from the original instance
+    std::string indent = detectIndent(*inst.node);
+
     // Generate the complete instance text with expanded port list
-    std::string full_inst = generateFullInstanceText(inst, ports);
+    std::string full_inst = generateFullInstanceText(inst, ports, indent);
     if (full_inst.empty()) {
         return;
     }
@@ -567,17 +570,17 @@ std::string AutosRewriter::generateAutoInstText(
 
 std::string AutosRewriter::generateFullInstanceText(
     const AutoInstInfo& inst,
-    const std::vector<PortInfo>& ports) {
+    const std::vector<PortInfo>& ports,
+    const std::string& indent) {
 
     std::ostringstream oss;
-    std::string indent = options_.indent;
 
     // Create template matcher for @ substitution
     TemplateMatcher matcher(inst.templ, nullptr);
     matcher.setInstance(inst.instance_name);
 
-    // Module type and instance name
-    oss << inst.module_type << " " << inst.instance_name << " (/*AUTOINST*/\n";
+    // Module type and instance name (with original indent)
+    oss << indent << inst.module_type << " " << inst.instance_name << " (/*AUTOINST*/\n";
 
     // Group ports by direction
     std::vector<const PortInfo*> outputs, inputs, inouts;
@@ -640,20 +643,24 @@ std::string AutosRewriter::generateFullInstanceText(
     addGroup(inouts, "Inouts");
     addGroup(inputs, "Inputs");
 
+    // Port connections get one additional indent level
+    // Use detected indent as the unit (e.g., if instance has 2-space indent, ports get 4)
+    std::string port_indent = indent + indent;
+
     // Write port connections
     for (size_t i = 0; i < all_ports.size(); ++i) {
         const auto& entry = all_ports[i];
 
         // Add group comment if present
         if (!entry.group_comment.empty()) {
-            oss << indent << "// " << entry.group_comment << "\n";
+            oss << port_indent << "// " << entry.group_comment << "\n";
         }
 
         // Format the port connection
         if (entry.is_unconnected) {
-            oss << indent << "." << entry.port->name << "()";
+            oss << port_indent << "." << entry.port->name << "()";
         } else {
-            oss << indent << "." << entry.port->name << "(" << entry.signal << ")";
+            oss << port_indent << "." << entry.port->name << "(" << entry.signal << ")";
         }
 
         if (i < all_ports.size() - 1) {
@@ -662,7 +669,7 @@ std::string AutosRewriter::generateFullInstanceText(
         oss << "\n";
     }
 
-    oss << ");";
+    oss << indent << ");";
 
     return oss.str();
 }
@@ -717,13 +724,16 @@ std::string AutosRewriter::detectIndent(const SyntaxNode& node) const {
     std::string indent = options_.indent;  // Default
 
     if (auto tok = node.getFirstToken()) {
+        bool saw_newline = false;
         for (const auto& trivia : tok.trivia()) {
-            if (trivia.kind == TriviaKind::Whitespace) {
-                auto text = trivia.getRawText();
-                auto nl_pos = text.rfind('\n');
-                if (nl_pos != std::string_view::npos) {
-                    indent = std::string(text.substr(nl_pos + 1));
-                }
+            if (trivia.kind == TriviaKind::EndOfLine) {
+                saw_newline = true;
+            } else if (trivia.kind == TriviaKind::Whitespace && saw_newline) {
+                // Whitespace immediately after a newline is the indent
+                indent = std::string(trivia.getRawText());
+                saw_newline = false;  // Reset for next potential newline
+            } else {
+                saw_newline = false;  // Non-whitespace resets
             }
         }
     }

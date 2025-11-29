@@ -542,6 +542,40 @@ TEST_CASE("AUTOWIRE - re-expansion replaces old content", "[integration][autowir
 }
 
 // =============================================================================
+// Indentation Preservation Tests
+// =============================================================================
+
+TEST_CASE("Integration - indentation preservation", "[integration][formatting]") {
+    auto top_sv = getFixturePath("indentation/top.sv");
+    auto lib_dir = getFixturePath("indentation/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, true);
+
+    CHECK(result.success);
+    CHECK(result.autoinst_count == 1);
+
+    // Port connections should be at base_indent + one_level
+    // Fixture uses 2-space indent, so:
+    // - Instance line: 2 spaces
+    // - Port connections: 4 spaces (2 + 2)
+    // - Closing );: 2 spaces
+    CHECK(result.modified_content.find("\n    .clk") != std::string::npos);  // 4 spaces
+    CHECK(result.modified_content.find("\n  );") != std::string::npos);       // 2 spaces
+}
+
+// =============================================================================
 // CLI Behavior Tests (run actual binary)
 // =============================================================================
 

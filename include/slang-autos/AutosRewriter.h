@@ -149,7 +149,8 @@ private:
 
     /// Generate complete instance text with expanded port list (for replace).
     std::string generateFullInstanceText(const AutoInstInfo& inst,
-                                          const std::vector<PortInfo>& ports);
+                                          const std::vector<PortInfo>& ports,
+                                          const std::string& indent);
 
     /// Generate AUTOWIRE declaration text.
     std::string generateAutowireText(const std::set<std::string>& existing_decls);
