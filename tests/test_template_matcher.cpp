@@ -292,3 +292,143 @@ TEST_CASE("TemplateMatcher - default pattern extracts first number", "[template]
         CHECK(result.signal_name == "data_123");
     }
 }
+
+TEST_CASE("TemplateMatcher - math functions", "[template][math]") {
+    AutoTemplate tmpl;
+    tmpl.module_name = "submod";
+    tmpl.instance_pattern = "";  // Use default pattern
+
+    SECTION("add function") {
+        tmpl.rules.emplace_back("data", "net_add(@, 1)");
+        TemplateMatcher matcher(&tmpl);
+        matcher.setInstance("u_sub_0");
+
+        PortInfo port("data", "input");
+        auto result = matcher.matchPort(port);
+        CHECK(result.signal_name == "net_1");  // 0 + 1 = 1
+    }
+
+    SECTION("sub function") {
+        tmpl.rules.emplace_back("data", "net_sub(@, 1)");
+        TemplateMatcher matcher(&tmpl);
+        matcher.setInstance("u_sub_5");
+
+        PortInfo port("data", "input");
+        auto result = matcher.matchPort(port);
+        CHECK(result.signal_name == "net_4");  // 5 - 1 = 4
+    }
+
+    SECTION("mul function") {
+        tmpl.rules.emplace_back("data", "net_mul(@, 2)");
+        TemplateMatcher matcher(&tmpl);
+        matcher.setInstance("u_sub_3");
+
+        PortInfo port("data", "input");
+        auto result = matcher.matchPort(port);
+        CHECK(result.signal_name == "net_6");  // 3 * 2 = 6
+    }
+
+    SECTION("div function") {
+        tmpl.rules.emplace_back("data", "net_div(@, 2)");
+        TemplateMatcher matcher(&tmpl);
+        matcher.setInstance("u_sub_7");
+
+        PortInfo port("data", "input");
+        auto result = matcher.matchPort(port);
+        CHECK(result.signal_name == "net_3");  // 7 / 2 = 3 (integer division)
+    }
+
+    SECTION("mod function") {
+        tmpl.rules.emplace_back("data", "net_mod(@, 2)");
+        TemplateMatcher matcher(&tmpl);
+        matcher.setInstance("u_sub_5");
+
+        PortInfo port("data", "input");
+        auto result = matcher.matchPort(port);
+        CHECK(result.signal_name == "net_1");  // 5 % 2 = 1
+    }
+
+    SECTION("nested functions") {
+        // (@ + 1) % 2: u_sub_0 -> (0+1)%2 = 1, u_sub_1 -> (1+1)%2 = 0
+        tmpl.rules.emplace_back("data", "net_mod(add(@, 1), 2)");
+        TemplateMatcher matcher(&tmpl);
+
+        matcher.setInstance("u_sub_0");
+        PortInfo port("data", "input");
+        auto result0 = matcher.matchPort(port);
+        CHECK(result0.signal_name == "net_1");  // (0+1)%2 = 1
+
+        matcher.setInstance("u_sub_1");
+        auto result1 = matcher.matchPort(port);
+        CHECK(result1.signal_name == "net_0");  // (1+1)%2 = 0
+    }
+
+    SECTION("deeply nested functions") {
+        // add(mul(2, 3), 1) = 2*3+1 = 7
+        tmpl.rules.emplace_back("data", "net_add(mul(2, 3), 1)");
+        TemplateMatcher matcher(&tmpl);
+        matcher.setInstance("u_sub_0");
+
+        PortInfo port("data", "input");
+        auto result = matcher.matchPort(port);
+        CHECK(result.signal_name == "net_7");
+    }
+
+    SECTION("multiple functions in expression") {
+        tmpl.rules.emplace_back("data", "a_add(@, 1)_b_mul(@, 2)");
+        TemplateMatcher matcher(&tmpl);
+        matcher.setInstance("u_sub_3");
+
+        PortInfo port("data", "input");
+        auto result = matcher.matchPort(port);
+        CHECK(result.signal_name == "a_4_b_6");  // add(3,1)=4, mul(3,2)=6
+    }
+}
+
+TEST_CASE("TemplateMatcher - math function edge cases", "[template][math]") {
+    AutoTemplate tmpl;
+    tmpl.module_name = "submod";
+    DiagnosticCollector diag;
+
+    SECTION("division by zero") {
+        tmpl.rules.emplace_back("data", "net_div(@, 0)");
+        TemplateMatcher matcher(&tmpl, &diag);
+        matcher.setInstance("u_sub_5");
+
+        PortInfo port("data", "input");
+        auto result = matcher.matchPort(port);
+        CHECK(result.signal_name == "net_0");  // Returns 0 on div by zero
+        CHECK(diag.warningCount() == 1);
+    }
+
+    SECTION("modulo by zero") {
+        tmpl.rules.emplace_back("data", "net_mod(@, 0)");
+        TemplateMatcher matcher(&tmpl, &diag);
+        matcher.setInstance("u_sub_5");
+
+        PortInfo port("data", "input");
+        auto result = matcher.matchPort(port);
+        CHECK(result.signal_name == "net_0");  // Returns 0 on mod by zero
+        CHECK(diag.warningCount() == 1);
+    }
+
+    SECTION("negative result") {
+        tmpl.rules.emplace_back("data", "net_sub(@, 10)");
+        TemplateMatcher matcher(&tmpl);
+        matcher.setInstance("u_sub_3");
+
+        PortInfo port("data", "input");
+        auto result = matcher.matchPort(port);
+        CHECK(result.signal_name == "net_-7");  // 3 - 10 = -7
+    }
+
+    SECTION("no functions - unchanged") {
+        tmpl.rules.emplace_back("data", "regular_signal");
+        TemplateMatcher matcher(&tmpl);
+        matcher.setInstance("u_sub_0");
+
+        PortInfo port("data", "input");
+        auto result = matcher.matchPort(port);
+        CHECK(result.signal_name == "regular_signal");
+    }
+}

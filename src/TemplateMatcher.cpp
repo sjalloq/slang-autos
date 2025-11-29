@@ -83,8 +83,9 @@ MatchResult TemplateMatcher::matchPort(const PortInfo& port) {
                     port_captures.push_back(match[i].str());
                 }
 
-                // Apply substitution and evaluate any ternary expressions
+                // Apply substitution, evaluate math functions, then ternary expressions
                 std::string signal_name = substitute(rule.signal_expr, port, port_captures);
+                signal_name = evaluateMathFunctions(signal_name);
                 signal_name = evaluateTernary(signal_name);
 
                 // Warn if assigning a constant to an output port
@@ -105,6 +106,7 @@ MatchResult TemplateMatcher::matchPort(const PortInfo& port) {
             // Invalid regex - try literal match
             if (rule.port_pattern == port.name) {
                 std::string signal_name = substitute(rule.signal_expr, port, {});
+                signal_name = evaluateMathFunctions(signal_name);
                 signal_name = evaluateTernary(signal_name);
 
                 // Warn if assigning a constant to an output port
@@ -289,6 +291,63 @@ std::string TemplateMatcher::formatSpecialValue(const std::string& signal) {
         return it->second;
     }
     return signal;
+}
+
+std::string TemplateMatcher::evaluateMathFunctions(const std::string& expr) {
+    std::string result = expr;
+    bool changed = true;
+
+    // Iteratively evaluate innermost function calls until none remain
+    while (changed) {
+        changed = false;
+
+        // Match function calls where both arguments are integers (innermost first)
+        // Pattern: func(int, int) where func is add|sub|mul|div|mod
+        static const std::regex func_re(
+            R"((add|sub|mul|div|mod)\s*\(\s*(-?\d+)\s*,\s*(-?\d+)\s*\))");
+
+        std::smatch match;
+        if (std::regex_search(result, match, func_re)) {
+            std::string func = match[1].str();
+            int a = std::stoi(match[2].str());
+            int b = std::stoi(match[3].str());
+            int res = 0;
+
+            if (func == "add") {
+                res = a + b;
+            } else if (func == "sub") {
+                res = a - b;
+            } else if (func == "mul") {
+                res = a * b;
+            } else if (func == "div") {
+                if (b != 0) {
+                    res = a / b;
+                } else if (diagnostics_) {
+                    diagnostics_->addWarning(
+                        "Division by zero in template expression, using 0",
+                        template_ ? template_->file_path : "",
+                        template_ ? template_->line_number : 0,
+                        "math_error");
+                }
+            } else if (func == "mod") {
+                if (b != 0) {
+                    res = a % b;
+                } else if (diagnostics_) {
+                    diagnostics_->addWarning(
+                        "Modulo by zero in template expression, using 0",
+                        template_ ? template_->file_path : "",
+                        template_ ? template_->line_number : 0,
+                        "math_error");
+                }
+            }
+
+            // Replace the function call with the result
+            result.replace(match.position(), match.length(), std::to_string(res));
+            changed = true;
+        }
+    }
+
+    return result;
 }
 
 } // namespace slang_autos

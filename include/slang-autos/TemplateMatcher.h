@@ -98,6 +98,14 @@ private:
     /// @return Evaluated result or original expression if not a ternary
     std::string evaluateTernary(const std::string& expr);
 
+    /// Evaluate math functions in a signal expression.
+    /// Supports: add(a,b), sub(a,b), mul(a,b), div(a,b), mod(a,b)
+    /// Arguments must be integers after variable substitution.
+    /// Nested functions are supported: mod(add(@, 1), 2)
+    /// @param expr Expression that may contain math functions
+    /// @return Expression with math functions evaluated
+    std::string evaluateMathFunctions(const std::string& expr);
+
     const AutoTemplate* template_;
     DiagnosticCollector* diagnostics_;
     std::string inst_name_;
