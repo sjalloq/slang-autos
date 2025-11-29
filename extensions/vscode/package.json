@@ -1,0 +1,66 @@
+{
+  "name": "slang-autos",
+  "displayName": "slang-autos: SystemVerilog AUTO Expansion",
+  "description": "Expand verilog-mode style AUTO macros (AUTOINST, AUTOWIRE, etc.) in SystemVerilog files",
+  "version": "0.1.0",
+  "publisher": "slang-autos",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:verilog",
+    "onLanguage:systemverilog"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "slang-autos.expandAutos",
+        "title": "Expand AUTOs",
+        "category": "slang-autos"
+      },
+      {
+        "command": "slang-autos.deleteAutos",
+        "title": "Delete AUTOs",
+        "category": "slang-autos"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "slang-autos.expandAutos",
+        "key": "ctrl+shift+a",
+        "mac": "cmd+shift+a",
+        "when": "editorTextFocus && (editorLangId == verilog || editorLangId == systemverilog)"
+      }
+    ],
+    "configuration": {
+      "title": "slang-autos",
+      "properties": {
+        "slang-autos.serverPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to slang-autos-lsp executable. If empty, searches PATH."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1",
+    "which": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.80.0",
+    "@types/which": "^3.0.3",
+    "typescript": "^5.4.0"
+  }
+}
