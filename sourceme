@@ -1,0 +1,41 @@
+VENV=.venv
+
+# Parse command line arguments
+_sourceme_show_help() {
+    echo "Usage: source sourceme [OPTIONS]"
+    echo ""
+    echo "Options:"
+    echo "  -h, --help    Show this help message"
+    echo "  --clean       Remove existing venv and recreate it"
+}
+
+_sourceme_clean=0
+for arg in "$@"; do
+    case $arg in
+        -h|--help)
+            _sourceme_show_help
+            return 0 2>/dev/null || exit 0
+            ;;
+        --clean)
+            _sourceme_clean=1
+            ;;
+    esac
+done
+
+if [[ $_sourceme_clean -eq 1 ]] && [[ -e $VENV ]]; then
+    echo "Removing existing venv: $VENV"
+    rm -rf "$VENV"
+fi
+
+if [[ ! -e $VENV ]]; then
+    echo "Creating new venv: $VENV"
+    python3 -m venv $VENV
+    source $VENV/bin/activate
+    python -m pip install -U pip wheel
+    python -m pip install -r python-requirements.txt
+else
+    echo "Using existing venv: $VENV"
+    source $VENV/bin/activate
+fi
+
+unset _sourceme_clean
