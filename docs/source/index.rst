@@ -23,12 +23,21 @@ Getting Started
 See the `README <https://github.com/your-repo/slang-autos#readme>`_ for
 installation instructions and basic usage.
 
-Developer Documentation
-=======================
+User Guide
+==========
 
 .. toctree::
    :maxdepth: 2
-   :caption: Contents:
+   :caption: User Guide:
+
+   templating
+
+Developer Guide
+===============
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Developer Guide:
 
    rewriter-architecture
 
