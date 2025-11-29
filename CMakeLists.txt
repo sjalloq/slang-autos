@@ -14,6 +14,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Options
 option(SLANG_AUTOS_BUILD_TESTS "Build tests" ON)
+option(SLANG_AUTOS_BUILD_LSP "Build LSP server" ON)
 option(SLANG_AUTOS_USE_SYSTEM_SLANG "Use system-installed slang instead of submodule" OFF)
 
 # ============================================================================
@@ -45,6 +46,25 @@ endif()
 
 # FetchContent for dependencies
 include(FetchContent)
+
+# reflect-cpp - JSON serialization (required for LSP)
+if(SLANG_AUTOS_BUILD_LSP)
+    FetchContent_Declare(
+        reflectcpp
+        GIT_REPOSITORY https://github.com/getml/reflect-cpp.git
+        GIT_TAG v0.17.0
+        GIT_SHALLOW ON
+    )
+    FetchContent_MakeAvailable(reflectcpp)
+
+    # Suppress warnings in reflect-cpp
+    if(TARGET reflectcpp AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(reflectcpp PRIVATE
+            -Wno-missing-field-initializers
+            -Wno-unused-parameter
+        )
+    endif()
+endif()
 
 # ============================================================================
 # Main Library
@@ -105,6 +125,14 @@ if(SLANG_AUTOS_BUILD_TESTS)
     FetchContent_MakeAvailable(Catch2)
 
     add_subdirectory(tests)
+endif()
+
+# ============================================================================
+# LSP Extension
+# ============================================================================
+
+if(SLANG_AUTOS_BUILD_LSP)
+    add_subdirectory(extensions/lsp)
 endif()
 
 # ============================================================================
