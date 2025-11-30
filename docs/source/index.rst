@@ -40,6 +40,7 @@ Developer Guide
    :caption: Developer Guide:
 
    rewriter-architecture
+   vscode-extension
 
 
 Indices and tables

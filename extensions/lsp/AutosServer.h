@@ -14,7 +14,7 @@
 
 namespace autos {
 
-/// Minimal LSP server that provides AUTO expansion via workspace/executeCommand.
+/// LSP server that provides AUTO expansion via workspace/executeCommand.
 /// Designed to be triggered from editor keybindings, similar to verilog-mode.
 class AutosServer : public lsp::LspServer<AutosServer> {
 public:

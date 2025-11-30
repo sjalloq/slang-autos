@@ -79,7 +79,8 @@ protected:
                 (static_cast<Impl*>(this)->*Method)(params.value());
             }
             else {
-                (static_cast<Impl*>(this)->*Method)(std::nullopt);
+                // No params - call with std::monostate (not std::nullopt)
+                (static_cast<Impl*>(this)->*Method)(std::monostate{});
             }
         };
         std::cerr << "Registered notification: " << name << "\n";

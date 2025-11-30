@@ -18,19 +18,51 @@
   "contributes": {
     "commands": [
       {
-        "command": "slang-autos.expandAutos",
+        "command": "slang-autos.expand",
         "title": "Expand AUTOs",
         "category": "slang-autos"
       },
       {
-        "command": "slang-autos.deleteAutos",
+        "command": "slang-autos.delete",
         "title": "Delete AUTOs",
+        "category": "slang-autos"
+      },
+      {
+        "command": "slang-autos.restartServer",
+        "title": "Restart Language Server",
         "category": "slang-autos"
       }
     ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "slang-autos.expand",
+          "when": "editorLangId == verilog || editorLangId == systemverilog"
+        },
+        {
+          "command": "slang-autos.delete",
+          "when": "editorLangId == verilog || editorLangId == systemverilog"
+        },
+        {
+          "command": "slang-autos.restartServer"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "slang-autos.expand",
+          "when": "editorLangId == verilog || editorLangId == systemverilog",
+          "group": "1_modification"
+        },
+        {
+          "command": "slang-autos.delete",
+          "when": "editorLangId == verilog || editorLangId == systemverilog",
+          "group": "1_modification"
+        }
+      ]
+    },
     "keybindings": [
       {
-        "command": "slang-autos.expandAutos",
+        "command": "slang-autos.expand",
         "key": "ctrl+shift+a",
         "mac": "cmd+shift+a",
         "when": "editorTextFocus && (editorLangId == verilog || editorLangId == systemverilog)"

@@ -100,6 +100,7 @@ T readJson(std::string& line, std::string& content) {
         } while (line.size() > 1);
 
         std::cin.read(&content[0], contentLength);
+        std::cerr << "RAW JSON received (" << contentLength << " bytes): " << content << "\n";
 
         rfl::Result<T> request = rfl::json::read<T>(content);
         if (!request) {
@@ -122,7 +123,9 @@ T readJson(std::string& line, std::string& content) {
 
         return std::move(request.value());
     }
-    return T{};
+    // stdin closed - exit gracefully
+    std::cerr << "stdin closed, exiting\n";
+    std::exit(0);
 }
 
 } // namespace lsp

@@ -60,8 +60,15 @@ protected:
     /// A request send from the client to the server to execute a command. The request might return
     /// a workspace edit which the client will apply to the workspace.
     std::optional<lsp::LSPAny> getWorkspaceExecuteCommand(const lsp::ExecuteCommandParams& params) {
-        std::cerr << " <---" << params.command << "(" << rfl::json::write(params.arguments)
-                  << ")\n";
+        std::cerr << " <---" << params.command << "\n";
+        std::cerr << "   arguments present: " << params.arguments.has_value() << "\n";
+        if (params.arguments.has_value()) {
+            std::cerr << "   arguments size: " << params.arguments->size() << "\n";
+            for (size_t i = 0; i < params.arguments->size(); ++i) {
+                std::cerr << "   arg[" << i << "]: " << rfl::json::write(params.arguments->at(i)) << "\n";
+            }
+        }
+        std::cerr << "   full params json: " << rfl::json::write(params) << "\n";
         auto command = m_commands.find(params.command);
         if (command == m_commands.end()) {
             std::cerr << "Unknown command: " << params.command << "\n";

@@ -19,14 +19,18 @@ namespace autos {
 
 AutosServer::AutosServer() {
     registerInitialize();
+    registerInitialized();
     registerShutdown();
+    registerExit();
 }
 
 lsp::InitializeResult AutosServer::getInitialize(const lsp::InitializeParams& params) {
-    // Register the executeCommand handler
+    // Register the workspace/executeCommand handler
+    // This allows the client to call commands via vscode.commands.executeCommand()
     registerWorkspaceExecuteCommand();
 
-    // Register our custom commands
+    // Register our commands - these will be advertised in executeCommandProvider
+    // and automatically routed by LanguageClient when called via executeCommand
     registerCommand<std::string, lsp::WorkspaceEdit,
                     &AutosServer::expandAutos>("slang-autos.expandAutos");
     registerCommand<std::string, lsp::WorkspaceEdit,
