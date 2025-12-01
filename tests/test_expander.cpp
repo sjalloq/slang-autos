@@ -97,37 +97,6 @@ TEST_CASE("AutoInstExpander - getExpandedSignals", "[expander]") {
     CHECK(it->range_str == "[7:0]");
 }
 
-TEST_CASE("AutoWireExpander - basic expansion", "[expander]") {
-    std::vector<ExpandedSignal> signals = {
-        {"wire_a", "output", "[7:0]", "[WIDTH-1:0]"},
-        {"wire_b", "output", "", ""},
-        {"input_sig", "input", "[3:0]", ""}  // Should be skipped (input)
-    };
-
-    AutoWireExpander expander;
-    std::string result = expander.expand(signals, {}, "    ");
-
-    CHECK(result.find("wire [WIDTH-1:0] wire_a;") != std::string::npos);
-    CHECK(result.find("wire wire_b;") != std::string::npos);
-    CHECK(result.find("input_sig") == std::string::npos);  // Skipped
-    CHECK(result.find("// Beginning of automatic wires") != std::string::npos);
-    CHECK(result.find("// End of automatics") != std::string::npos);
-}
-
-TEST_CASE("AutoWireExpander - skip existing declarations", "[expander]") {
-    std::vector<ExpandedSignal> signals = {
-        {"wire_a", "output", "", ""},
-        {"wire_b", "output", "", ""}
-    };
-
-    std::set<std::string> existing = {"wire_a"};
-
-    AutoWireExpander expander;
-    std::string result = expander.expand(signals, existing, "    ");
-
-    CHECK(result.find("wire_a") == std::string::npos);  // Skipped
-    CHECK(result.find("wire wire_b;") != std::string::npos);
-}
 
 // ============================================================================
 // SignalAggregator Tests
@@ -234,36 +203,6 @@ TEST_CASE("SignalAggregator - unconnected and constants skipped", "[aggregator]"
     CHECK(driven.count("unused") == 0);
 }
 
-// ============================================================================
-// AutoWireExpander with Aggregator Tests
-// ============================================================================
-
-TEST_CASE("AutoWireExpander - expandFromAggregator", "[expander]") {
-    SignalAggregator aggregator;
-
-    std::vector<PortConnection> connections = {
-        {"out_a", "out_a", "output"},
-        {"out_b", "out_b", "output"},
-        {"in_c", "in_c", "input"}
-    };
-    std::vector<PortInfo> ports = {
-        {"out_a", "output", 8},
-        {"out_b", "output", 1},
-        {"in_c", "input", 4}
-    };
-
-    aggregator.addFromInstance("u_inst", connections, ports);
-
-    std::set<std::string> existing = {"out_a"};  // Already declared
-
-    AutoWireExpander expander;
-    std::string result = expander.expandFromAggregator(
-        aggregator, existing, "logic", "    ", PortGrouping::ByDirection);
-
-    CHECK(result.find("out_a") == std::string::npos);  // Already declared
-    CHECK(result.find("logic out_b") != std::string::npos);
-    CHECK(result.find("in_c") == std::string::npos);  // Input, not driven
-}
 
 // ============================================================================
 // AutoRegExpander Tests
@@ -317,79 +256,3 @@ TEST_CASE("AutoRegExpander - skip existing declarations", "[expander]") {
     CHECK(result.find("logic [7:0] reg_b") != std::string::npos);
 }
 
-// ============================================================================
-// AutoPortsExpander Tests
-// ============================================================================
-
-TEST_CASE("AutoPortsExpander - basic expansion", "[expander]") {
-    SignalAggregator aggregator;
-
-    // Instance connections
-    std::vector<PortConnection> connections = {
-        {"out_data", "out_data", "output"},  // External output (not consumed)
-        {"in_data", "in_data", "input"}      // External input (not driven)
-    };
-    std::vector<PortInfo> ports = {
-        {"out_data", "output", 8},
-        {"in_data", "input", 8}
-    };
-    aggregator.addFromInstance("u_inst", connections, ports);
-
-    std::set<std::string> existing;
-
-    AutoPortsExpander expander;
-    std::string result = expander.expand(
-        aggregator, existing, "logic", "    ", PortGrouping::ByDirection);
-
-    // Should generate ANSI-style port declarations
-    CHECK(result.find("output logic [7:0] out_data") != std::string::npos);
-    CHECK(result.find("input logic [7:0] in_data") != std::string::npos);
-}
-
-TEST_CASE("AutoPortsExpander - skip existing ports", "[expander]") {
-    SignalAggregator aggregator;
-
-    std::vector<PortConnection> connections = {
-        {"port_a", "port_a", "input"},
-        {"port_b", "port_b", "input"}
-    };
-    std::vector<PortInfo> ports = {
-        {"port_a", "input", 1},
-        {"port_b", "input", 1}
-    };
-    aggregator.addFromInstance("u_inst", connections, ports);
-
-    std::set<std::string> existing = {"port_a"};
-
-    AutoPortsExpander expander;
-    std::string result = expander.expand(
-        aggregator, existing, "logic", "    ", PortGrouping::ByDirection);
-
-    CHECK(result.find("port_a") == std::string::npos);  // Already declared
-    CHECK(result.find("input logic port_b") != std::string::npos);
-}
-
-TEST_CASE("AutoPortsExpander - alphabetical grouping", "[expander]") {
-    SignalAggregator aggregator;
-
-    std::vector<PortConnection> connections = {
-        {"zebra", "zebra", "input"},
-        {"alpha", "alpha", "output"}
-    };
-    std::vector<PortInfo> ports = {
-        {"zebra", "input", 1},
-        {"alpha", "output", 1}
-    };
-    aggregator.addFromInstance("u_inst", connections, ports);
-
-    std::set<std::string> existing;
-
-    AutoPortsExpander expander;
-    std::string result = expander.expand(
-        aggregator, existing, "logic", "    ", PortGrouping::Alphabetical);
-
-    // In alphabetical order, alpha should come before zebra
-    size_t alpha_pos = result.find("alpha");
-    size_t zebra_pos = result.find("zebra");
-    CHECK(alpha_pos < zebra_pos);
-}

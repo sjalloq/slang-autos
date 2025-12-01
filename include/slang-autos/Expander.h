@@ -113,6 +113,10 @@ public:
     /// Get inout nets - for AUTOINOUT
     [[nodiscard]] std::vector<NetInfo> getInoutNets() const;
 
+    /// Get internal nets (driven AND consumed by instances) - for AUTOWIRE
+    /// These are instance-to-instance connections that need wire declarations.
+    [[nodiscard]] std::vector<NetInfo> getInternalNets() const;
+
     /// Get the resolved width for a net (for width-adjusted connections)
     [[nodiscard]] std::optional<int> getNetWidth(const std::string& name) const;
 
@@ -200,7 +204,9 @@ public:
         const std::string& indent = "    ");
 
     /// Generate wire declarations from SignalAggregator data.
-    /// Uses instance-driven nets (outputs/inouts connected to instances).
+    /// Uses internal nets (both driven AND consumed by instances).
+    /// These are instance-to-instance connections that need wire declarations.
+    /// External signals become ports, not wires.
     /// @param aggregator Signal aggregator with all instance connections
     /// @param existing_decls Signal names already declared by user (to skip)
     /// @param type_str Declaration type ("wire", "logic", etc.)

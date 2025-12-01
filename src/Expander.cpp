@@ -289,8 +289,11 @@ std::string AutoWireExpander::expandFromAggregator(
     const std::string& indent,
     PortGrouping grouping) {
 
-    // Get all nets driven by instances
-    std::vector<NetInfo> driven_nets = aggregator.getInstanceDrivenNets();
+    // Get internal nets only (both driven AND consumed by instances)
+    // These are instance-to-instance connections that need wire declarations.
+    // External signals (driven but not consumed, or consumed but not driven)
+    // should be ports, not wires.
+    std::vector<NetInfo> driven_nets = aggregator.getInternalNets();
 
     // Filter out already-declared signals
     std::vector<NetInfo> to_declare;
@@ -430,6 +433,19 @@ std::vector<NetInfo> SignalAggregator::getInoutNets() const {
         auto it = nets_.find(net_name);
         if (it != nets_.end()) {
             result.push_back(it->second.info);
+        }
+    }
+    return result;
+}
+
+std::vector<NetInfo> SignalAggregator::getInternalNets() const {
+    std::vector<NetInfo> result;
+    for (const auto& [name, usage] : nets_) {
+        // Internal net: driven by instance output AND consumed by instance input
+        // Excludes inouts (those are external bidirectional ports)
+        if (usage.driven_by_instance && usage.consumed_by_instance &&
+            inout_nets_.find(name) == inout_nets_.end()) {
+            result.push_back(usage.info);
         }
     }
     return result;

@@ -298,7 +298,54 @@ ExpansionResult AutosTool::expandFile(
         }
     }
 
-    // WORKAROUND 4: Clean up multiple consecutive blank lines
+    // WORKAROUND 4: Remove duplicate /*AUTOPORTS*/ markers
+    //
+    // The /*AUTOPORTS*/ marker can appear twice in output:
+    // 1. We include it before the first generated port (correct position)
+    // 2. The original marker (as trivia on closeParen) is preserved
+    //
+    // We keep the first occurrence (after user ports, before generated) and remove
+    // subsequent duplicates.
+    const std::string autoports_marker = "/*AUTOPORTS*/";
+    size_t first_autoports = result.modified_content.find(autoports_marker);
+    if (first_autoports != std::string::npos) {
+        // Look for additional occurrences after the first
+        pos = result.modified_content.find(autoports_marker, first_autoports + autoports_marker.length());
+        while (pos != std::string::npos) {
+            // Find the start of the line
+            size_t line_start = result.modified_content.rfind('\n', pos);
+            line_start = (line_start == std::string::npos) ? 0 : line_start + 1;
+
+            // Find the end of the line
+            size_t line_end = result.modified_content.find('\n', pos);
+            if (line_end != std::string::npos) {
+                line_end++;  // Include the newline
+            } else {
+                line_end = result.modified_content.length();
+            }
+
+            // Check if this line contains only /*AUTOPORTS*/ (plus whitespace)
+            std::string line = result.modified_content.substr(line_start, line_end - line_start);
+            std::string trimmed = line;
+            size_t start = trimmed.find_first_not_of(" \t\n\r");
+            size_t end = trimmed.find_last_not_of(" \t\n\r");
+            if (start != std::string::npos && end != std::string::npos) {
+                trimmed = trimmed.substr(start, end - start + 1);
+            }
+
+            if (trimmed == autoports_marker) {
+                // Remove this line (duplicate marker)
+                result.modified_content.erase(line_start, line_end - line_start);
+                // Continue searching
+                pos = result.modified_content.find(autoports_marker, first_autoports + autoports_marker.length());
+            } else {
+                // Not a standalone marker, look for next
+                pos = result.modified_content.find(autoports_marker, pos + autoports_marker.length());
+            }
+        }
+    }
+
+    // WORKAROUND 5: Clean up multiple consecutive blank lines
     //
     // The above removals can leave behind multiple blank lines where content was stripped.
     // We normalize to at most one blank line between content for cleaner output.
@@ -415,247 +462,6 @@ std::vector<PortInfo> AutosTool::getModulePorts(const std::string& module_name) 
     // Cache result for future lookups
     port_cache_[module_name] = ports;
     return ports;
-}
-
-std::optional<std::pair<Replacement, std::vector<ExpandedSignal>>>
-AutosTool::expandAutoInst(
-    const std::string& content,
-    const AutoInst& autoinst,
-    const AutoParser& parser) {
-
-    // Find instance info
-    auto info = findInstanceInfoFromAutoinst(content, autoinst.source_offset);
-    if (!info) {
-        diagnostics_.addWarning(
-            "Could not find instance info for AUTOINST",
-            autoinst.file_path, autoinst.line_number);
-        return std::nullopt;
-    }
-
-    auto [module_type, instance_name, inst_start] = *info;
-
-    // Find closing paren
-    auto close_paren = findInstanceCloseParen(content, autoinst.end_offset);
-    if (!close_paren) {
-        diagnostics_.addWarning(
-            "Could not find closing paren for instance",
-            autoinst.file_path, autoinst.line_number);
-        return std::nullopt;
-    }
-
-    // Get module ports
-    auto ports = getModulePorts(module_type);
-
-    // If no ports found (module not in compilation), preserve existing content
-    if (ports.empty()) {
-        diagnostics_.addWarning(
-            "No ports found for module '" + module_type + "', preserving existing content",
-            autoinst.file_path, autoinst.line_number);
-        return std::nullopt;
-    }
-
-    // Find manual ports
-    auto manual_ports = findManualPorts(content, autoinst.source_offset);
-
-    // Find template
-    auto* tmpl = parser.getTemplateForModule(module_type, autoinst.line_number);
-
-    // Detect indent
-    std::string indent = detectIndent(content, autoinst.source_offset);
-    if (indent.empty()) {
-        indent = options_.indent;
-    }
-
-    // Create expander and expand
-    AutoInstExpander expander(tmpl, &diagnostics_);
-    std::string expansion = expander.expand(
-        instance_name,
-        ports,
-        manual_ports,
-        autoinst.filter_pattern.value_or(""),
-        indent,
-        options_.alignment);
-
-    // Get expanded signals for AUTOWIRE
-    auto signals = expander.getExpandedSignals(instance_name, ports);
-
-    // Create replacement
-    Replacement repl;
-    repl.start = autoinst.end_offset;
-    repl.end = *close_paren;
-    repl.new_text = expansion;
-    repl.description = "AUTOINST for " + instance_name;
-
-    return std::make_pair(repl, signals);
-}
-
-std::optional<Replacement> AutosTool::expandAutoInstWithAggregator(
-    const std::string& content,
-    const AutoInst& autoinst,
-    const AutoParser& parser,
-    SignalAggregator& aggregator) {
-
-    // Find instance info
-    auto info = findInstanceInfoFromAutoinst(content, autoinst.source_offset);
-    if (!info) {
-        diagnostics_.addWarning(
-            "Could not find instance info for AUTOINST",
-            autoinst.file_path, autoinst.line_number);
-        return std::nullopt;
-    }
-
-    auto [module_type, instance_name, inst_start] = *info;
-
-    // Find closing paren
-    auto close_paren = findInstanceCloseParen(content, autoinst.end_offset);
-    if (!close_paren) {
-        diagnostics_.addWarning(
-            "Could not find closing paren for instance",
-            autoinst.file_path, autoinst.line_number);
-        return std::nullopt;
-    }
-
-    // Get module ports
-    auto ports = getModulePorts(module_type);
-
-    // If no ports found (module not in compilation), preserve existing content
-    if (ports.empty()) {
-        diagnostics_.addWarning(
-            "No ports found for module '" + module_type + "', preserving existing content",
-            autoinst.file_path, autoinst.line_number);
-        return std::nullopt;
-    }
-
-    // Find manual ports
-    auto manual_ports = findManualPorts(content, autoinst.source_offset);
-
-    // Find template
-    auto* tmpl = parser.getTemplateForModule(module_type, autoinst.line_number);
-
-    // Detect indent
-    std::string indent = detectIndent(content, autoinst.source_offset);
-    if (indent.empty()) {
-        indent = options_.indent;
-    }
-
-    // Create expander and expand
-    AutoInstExpander expander(tmpl, &diagnostics_);
-    std::string expansion = expander.expand(
-        instance_name,
-        ports,
-        manual_ports,
-        autoinst.filter_pattern.value_or(""),
-        indent,
-        options_.alignment);
-
-    // Add connections to aggregator
-    aggregator.addFromInstance(instance_name, expander.connections(), ports);
-
-    // Create replacement
-    Replacement repl;
-    repl.start = autoinst.end_offset;
-    repl.end = *close_paren;
-    repl.new_text = expansion;
-    repl.description = "AUTOINST for " + instance_name;
-
-    return repl;
-}
-
-std::optional<Replacement> AutosTool::expandAutoReg(
-    const std::string& content,
-    const AutoReg& autoreg,
-    const std::vector<NetInfo>& module_outputs,
-    const SignalAggregator& aggregator,
-    const std::set<std::string>& user_decls) {
-
-    // Detect indent
-    std::string indent = detectIndent(content, autoreg.source_offset);
-    if (indent.empty()) {
-        indent = options_.indent;
-    }
-
-    // Expand
-    AutoRegExpander expander(&diagnostics_);
-    std::string expansion = expander.expand(
-        module_outputs, aggregator, user_decls, "logic", indent, PortGrouping::ByDirection);
-
-    if (expansion.empty()) {
-        return std::nullopt;
-    }
-
-    // Find end of existing AUTOREG region
-    size_t end_offset = findAutoBlockEnd(content, autoreg.end_offset, "regs");
-
-    // Create replacement
-    Replacement repl;
-    repl.start = autoreg.end_offset;
-    repl.end = end_offset;
-    repl.new_text = expansion;
-    repl.description = "AUTOREG";
-
-    return repl;
-}
-
-size_t AutosTool::findAutoBlockEnd(const std::string& content, size_t start, [[maybe_unused]] const std::string& marker_suffix) {
-    // Look for the standard end marker (verilog-mode compatible)
-    std::string end_marker = "// End of automatics";
-    auto marker_pos = content.find(end_marker, start);
-
-    if (marker_pos != std::string::npos) {
-        // Include the marker line
-        auto line_end = content.find('\n', marker_pos);
-        return (line_end != std::string::npos) ? line_end + 1 : content.length();
-    }
-
-    // No marker found, just return start position
-    return start;
-}
-
-std::string AutosTool::applyAutowireRewriter(
-    const std::string& content,
-    const SignalAggregator& aggregator,
-    const std::set<std::string>& user_decls) {
-
-    using namespace slang::syntax;
-
-    // Parse content with slang
-    auto tree = SyntaxTree::fromText(content);
-    if (!tree) {
-        diagnostics_.addWarning("Failed to parse content for AUTOWIRE rewriting");
-        return content;
-    }
-
-    // Create rewriter and transform
-    AutowireRewriter rewriter(aggregator, user_decls, true /* use_logic */);
-    auto new_tree = rewriter.transform(tree);
-
-    // Convert back to text
-    std::string result = SyntaxPrinter::printFile(*new_tree);
-
-    // Remove the dummy marker localparam that was added to preserve the end comment trivia
-    const std::string dummy_marker = "localparam _SLANG_AUTOS_END_MARKER_ = 0;";
-    size_t pos = result.find(dummy_marker);
-    while (pos != std::string::npos) {
-        // Find the start of the line
-        size_t line_start = result.rfind('\n', pos);
-        line_start = (line_start == std::string::npos) ? 0 : line_start + 1;
-
-        // Find the end of the line
-        size_t line_end = result.find('\n', pos);
-        if (line_end != std::string::npos) {
-            line_end++;  // Include the newline
-        } else {
-            line_end = result.length();
-        }
-
-        // Remove the line (keeping only whitespace before the marker if it's just indentation)
-        result.erase(line_start, line_end - line_start);
-
-        // Look for more occurrences
-        pos = result.find(dummy_marker);
-    }
-
-    return result;
 }
 
 } // namespace slang_autos
