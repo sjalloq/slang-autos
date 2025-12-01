@@ -31,9 +31,9 @@ lsp::InitializeResult AutosServer::getInitialize(const lsp::InitializeParams& pa
 
     // Register our commands - these will be advertised in executeCommandProvider
     // and automatically routed by LanguageClient when called via executeCommand
-    registerCommand<std::string, lsp::WorkspaceEdit,
+    registerCommand<std::string, ExpandResult,
                     &AutosServer::expandAutos>("slang-autos.expandAutos");
-    registerCommand<std::string, lsp::WorkspaceEdit,
+    registerCommand<std::string, ExpandResult,
                     &AutosServer::deleteAutos>("slang-autos.deleteAutos");
 
     // Store workspace folder if provided
@@ -75,8 +75,8 @@ std::monostate AutosServer::getShutdown(std::monostate) {
     return std::monostate{};
 }
 
-lsp::WorkspaceEdit AutosServer::expandAutos(const std::string& fileUri) {
-    lsp::WorkspaceEdit edit;
+ExpandResult AutosServer::expandAutos(const std::string& fileUri) {
+    ExpandResult result;
 
     // Convert URI to file path
     URI fileUriObj(fileUri);
@@ -87,8 +87,10 @@ lsp::WorkspaceEdit AutosServer::expandAutos(const std::string& fileUri) {
     // Read original content to get line count for full-file replacement
     std::ifstream ifs(filePath);
     if (!ifs) {
-        std::cerr << "Failed to open file: " << filePath << "\n";
-        return edit;
+        std::string msg = "Failed to open file: " + filePath.string();
+        std::cerr << msg << "\n";
+        result.errors.push_back(msg);
+        return result;
     }
     std::stringstream buffer;
     buffer << ifs.rdbuf();
@@ -114,17 +116,44 @@ lsp::WorkspaceEdit AutosServer::expandAutos(const std::string& fileUri) {
     std::vector<std::string> args = {filePath.string()};
 
     if (!tool.loadWithArgs(args)) {
-        std::cerr << "Failed to load file for compilation\n";
-        // Return empty edit on failure
-        return edit;
+        std::string msg = "Failed to load file for compilation. Check that all referenced modules are available.";
+        std::cerr << msg << "\n";
+        result.errors.push_back(msg);
+        return result;
     }
 
     // Expand with dry_run=true so we don't write to disk
-    auto result = tool.expandFile(filePath, true);
+    auto expansionResult = tool.expandFile(filePath, true);
 
-    if (!result.hasChanges()) {
+    // Collect diagnostics from the tool
+    const auto& diagnostics = tool.diagnostics();
+    for (const auto& diag : diagnostics.diagnostics()) {
+        std::string msg = diag.message;
+        if (!diag.file_path.empty()) {
+            msg = diag.file_path;
+            if (diag.line_number > 0) {
+                msg += ":" + std::to_string(diag.line_number);
+            }
+            msg += ": " + diag.message;
+        }
+
+        if (diag.level == slang_autos::DiagnosticLevel::Error) {
+            result.errors.push_back(msg);
+        } else {
+            result.warnings.push_back(msg);
+        }
+    }
+
+    // Store counts
+    result.autoinst_count = expansionResult.autoinst_count;
+    result.autowire_count = expansionResult.autowire_count;
+
+    if (!expansionResult.hasChanges()) {
         std::cerr << "No changes needed\n";
-        return edit;
+        if (result.errors.empty() && result.warnings.empty()) {
+            result.messages.push_back("No AUTO macros found in file.");
+        }
+        return result;
     }
 
     // Create a TextEdit that replaces the entire file content
@@ -136,27 +165,35 @@ lsp::WorkspaceEdit AutosServer::expandAutos(const std::string& fileUri) {
                 .character = 0
             },
         },
-        .newText = result.modified_content,
+        .newText = expansionResult.modified_content,
     };
 
     // Add to workspace edit
-    edit.changes = std::unordered_map<std::string, std::vector<lsp::TextEdit>>{};
-    edit.changes->emplace(fileUri, std::vector<lsp::TextEdit>{textEdit});
+    result.edit.changes = std::unordered_map<std::string, std::vector<lsp::TextEdit>>{};
+    result.edit.changes->emplace(fileUri, std::vector<lsp::TextEdit>{textEdit});
 
-    std::cerr << "Expanded " << result.autoinst_count << " AUTOINST, "
-              << result.autowire_count << " AUTOWIRE\n";
+    // Add success message
+    std::stringstream ss;
+    ss << "Expanded " << expansionResult.autoinst_count << " AUTOINST";
+    if (expansionResult.autowire_count > 0) {
+        ss << ", " << expansionResult.autowire_count << " AUTOWIRE";
+    }
+    result.messages.push_back(ss.str());
 
-    return edit;
+    std::cerr << ss.str() << "\n";
+
+    return result;
 }
 
-lsp::WorkspaceEdit AutosServer::deleteAutos(const std::string& fileUri) {
-    lsp::WorkspaceEdit edit;
+ExpandResult AutosServer::deleteAutos(const std::string& fileUri) {
+    ExpandResult result;
 
     // TODO: Implement delete - strip AUTO-generated content
-    // For now, just return empty edit
+    // For now, just return empty result with message
     std::cerr << "deleteAutos not yet implemented for: " << fileUri << "\n";
+    result.messages.push_back("Delete AUTOs is not yet implemented.");
 
-    return edit;
+    return result;
 }
 
 } // namespace autos

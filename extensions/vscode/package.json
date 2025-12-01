@@ -75,6 +75,11 @@
           "type": "string",
           "default": "",
           "description": "Path to slang-autos-lsp executable. If empty, searches PATH."
+        },
+        "slang-autos.verbose": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable verbose debug logging in the Output panel. Can also be enabled by setting SLANG_AUTOS_VERBOSE=1 environment variable."
         }
       }
     }

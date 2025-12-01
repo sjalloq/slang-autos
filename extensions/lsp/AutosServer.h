@@ -11,8 +11,19 @@
 #include "lsp/LspServer.h"
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace autos {
+
+/// Result of an expand/delete operation with diagnostics
+struct ExpandResult {
+    lsp::WorkspaceEdit edit;
+    std::vector<std::string> messages;  // Informational messages
+    std::vector<std::string> warnings;  // Warning messages
+    std::vector<std::string> errors;    // Error messages
+    int autoinst_count = 0;
+    int autowire_count = 0;
+};
 
 /// LSP server that provides AUTO expansion via workspace/executeCommand.
 /// Designed to be triggered from editor keybindings, similar to verilog-mode.
@@ -31,13 +42,13 @@ public:
 
     /// Command: Expand all AUTOs in the given file
     /// @param fileUri URI of the file to process (e.g., "file:///path/to/file.sv")
-    /// @return WorkspaceEdit containing the expanded AUTO regions
-    lsp::WorkspaceEdit expandAutos(const std::string& fileUri);
+    /// @return ExpandResult with edit, diagnostics, and statistics
+    ExpandResult expandAutos(const std::string& fileUri);
 
     /// Command: Delete all AUTO-generated content in the given file
     /// @param fileUri URI of the file to process
-    /// @return WorkspaceEdit with AUTO regions cleared
-    lsp::WorkspaceEdit deleteAutos(const std::string& fileUri);
+    /// @return ExpandResult with edit and diagnostics
+    ExpandResult deleteAutos(const std::string& fileUri);
 
 private:
     std::optional<lsp::WorkspaceFolder> m_workspaceFolder;
