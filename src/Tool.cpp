@@ -302,10 +302,10 @@ ExpansionResult AutosTool::expandFile(
     //
     // The /*AUTOPORTS*/ marker can appear twice in output:
     // 1. We include it before the first generated port (correct position)
-    // 2. The original marker (as trivia on closeParen) is preserved
+    // 2. The original marker (as trivia on closeParen) is preserved inline
     //
     // We keep the first occurrence (after user ports, before generated) and remove
-    // subsequent duplicates.
+    // all subsequent duplicates - whether standalone or inline.
     const std::string autoports_marker = "/*AUTOPORTS*/";
     size_t first_autoports = result.modified_content.find(autoports_marker);
     if (first_autoports != std::string::npos) {
@@ -334,13 +334,15 @@ ExpansionResult AutosTool::expandFile(
             }
 
             if (trimmed == autoports_marker) {
-                // Remove this line (duplicate marker)
+                // Remove this entire line (standalone duplicate marker)
                 result.modified_content.erase(line_start, line_end - line_start);
                 // Continue searching
                 pos = result.modified_content.find(autoports_marker, first_autoports + autoports_marker.length());
             } else {
-                // Not a standalone marker, look for next
-                pos = result.modified_content.find(autoports_marker, pos + autoports_marker.length());
+                // Inline marker (e.g., "input logic foo/*AUTOPORTS*/") - remove just the marker
+                result.modified_content.erase(pos, autoports_marker.length());
+                // Continue searching from the same position
+                pos = result.modified_content.find(autoports_marker, first_autoports + autoports_marker.length());
             }
         }
     }
