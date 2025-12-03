@@ -1,5 +1,7 @@
 #include <iostream>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 
 #include "slang/driver/Driver.h"
 #include "slang/ast/Compilation.h"
@@ -175,6 +177,41 @@ int main(int argc, char* argv[]) {
         OS::printE("error: no input files specified\n");
         OS::printE("Run with --help for usage information\n");
         return 1;
+    }
+
+    // ========================================================================
+    // Pre-scan files for inline config (before slang parses)
+    // ========================================================================
+    // We need to extract library paths from inline config BEFORE slang parses,
+    // otherwise -y, +libext+, +incdir+ directives would be too late.
+
+    for (const auto& path : filesToExpand) {
+        std::ifstream file(path);
+        if (!file) continue;
+
+        std::stringstream buffer;
+        buffer << file.rdbuf();
+        std::string content = buffer.str();
+
+        InlineConfig inline_cfg = parseInlineConfig(content);
+
+        // Resolve paths relative to the source file's directory
+        fs::path file_dir = fs::absolute(path).parent_path();
+
+        // Add library search directories (-y equivalent)
+        for (const auto& dir : inline_cfg.libdirs) {
+            fs::path resolved = (file_dir / dir).lexically_normal();
+            driver.sourceLoader.addSearchDirectories(resolved.string());
+        }
+        // Add library file extensions (+libext+ equivalent)
+        for (const auto& ext : inline_cfg.libext) {
+            driver.sourceLoader.addSearchExtension(ext);
+        }
+        // Add include directories (+incdir+ equivalent)
+        for (const auto& dir : inline_cfg.incdirs) {
+            fs::path resolved = (file_dir / dir).lexically_normal();
+            driver.sourceManager.addUserDirectories(resolved.string());
+        }
     }
 
     // ========================================================================
