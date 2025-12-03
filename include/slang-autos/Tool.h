@@ -42,6 +42,7 @@ struct AutosToolOptions {
     bool alignment = true;      ///< Align port names in output
     std::string indent = "    ";///< Indentation string
     int verbosity = 0;          ///< 0=quiet, 1=normal, 2=verbose, 3=debug
+    bool single_unit = true;    ///< Treat all files as single compilation unit
 };
 
 /// Main orchestrator for AUTO macro expansion.

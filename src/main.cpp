@@ -7,6 +7,8 @@
 
 #include "slang-autos/Tool.h"
 #include "slang-autos/Writer.h"
+#include "slang-autos/Config.h"
+#include "slang-autos/Parser.h"
 
 using namespace slang;
 using namespace slang::driver;
@@ -91,6 +93,11 @@ int main(int argc, char* argv[]) {
     driver.cmdLine.add("--verbose", verbose, "Increase verbosity");
     driver.cmdLine.add("-q,--quiet", quiet, "Suppress non-error output");
 
+    // Compilation unit mode (default: single unit for better macro handling)
+    std::optional<bool> noSingleUnit;
+    driver.cmdLine.add("--no-single-unit", noSingleUnit,
+                       "Treat files as separate compilation units (disables default --single-unit)");
+
     // ========================================================================
     // Parse command line
     // ========================================================================
@@ -117,17 +124,48 @@ int main(int argc, char* argv[]) {
     driver.options.compilationFlags[ast::CompilationFlags::IgnoreUnknownModules] = true;
 
     // ========================================================================
-    // Build tool options
+    // Load configuration file (.slang-autos.toml)
     // ========================================================================
 
-    int verbosity = quiet.value_or(false) ? 0 : (verbose.value_or(false) ? 2 : 1);
+    std::optional<FileConfig> file_config;
+    if (auto config_path = ConfigLoader::findConfigFile()) {
+        file_config = ConfigLoader::loadFile(*config_path);
+        // Note: Library paths from config file should ideally be added to
+        // driver.options before parseAllSources(). For now, we only use
+        // the formatting/behavior options.
+    }
 
-    AutosTool::Options options;
-    options.strictness = strictMode.value_or(false) ? StrictnessMode::Strict
-                                                    : StrictnessMode::Lenient;
-    options.alignment = !noAlignment.value_or(false);
-    options.indent = std::string(indentSpaces.value_or(4), ' ');
-    options.verbosity = verbosity;
+    // ========================================================================
+    // Build tool options (merging CLI > config file > defaults)
+    // ========================================================================
+
+    // Track which CLI options were explicitly specified
+    CliFlags cli_flags;
+    cli_flags.has_strictness = strictMode.has_value();
+    cli_flags.has_alignment = noAlignment.has_value();
+    cli_flags.has_indent = indentSpaces.has_value();
+    cli_flags.has_verbosity = verbose.has_value() || quiet.has_value();
+    cli_flags.has_single_unit = noSingleUnit.has_value();
+
+    // Build CLI options (these are the "raw" CLI values)
+    AutosTool::Options cli_options;
+    cli_options.strictness = strictMode.value_or(false) ? StrictnessMode::Strict
+                                                        : StrictnessMode::Lenient;
+    cli_options.alignment = !noAlignment.value_or(false);
+    cli_options.indent = std::string(indentSpaces.value_or(4), ' ');
+    cli_options.verbosity = quiet.value_or(false) ? 0 : (verbose.value_or(false) ? 2 : 1);
+    cli_options.single_unit = !noSingleUnit.value_or(false);
+
+    // Merge: CLI > config file > defaults
+    // Note: Inline config is handled per-file in the expansion loop
+    InlineConfig empty_inline;  // Will be merged per-file
+    MergedConfig merged = ConfigLoader::merge(file_config, empty_inline, cli_options, cli_flags);
+    AutosTool::Options options = merged.toToolOptions();
+    int verbosity = options.verbosity;
+
+    // Apply single_unit setting to slang driver (must be before parseAllSources)
+    // This makes macros from includes visible across all files
+    driver.options.singleUnit = merged.single_unit;
 
     // ========================================================================
     // Check for files to expand
