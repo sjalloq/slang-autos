@@ -744,6 +744,14 @@ std::string AutosRewriter::generateFullInstanceText(
     // Use detected indent as the unit (e.g., if instance has 2-space indent, ports get 4)
     std::string port_indent = indent + indent;
 
+    // Calculate max port name length for alignment
+    size_t max_port_len = 0;
+    if (options_.alignment) {
+        for (const auto& entry : all_ports) {
+            max_port_len = std::max(max_port_len, entry.port->name.length());
+        }
+    }
+
     // Write port connections
     for (size_t i = 0; i < all_ports.size(); ++i) {
         const auto& entry = all_ports[i];
@@ -753,11 +761,19 @@ std::string AutosRewriter::generateFullInstanceText(
             oss << port_indent << "// " << entry.group_comment << "\n";
         }
 
-        // Format the port connection
+        // Format the port connection with optional alignment
+        oss << port_indent << "." << entry.port->name;
+
+        // Add padding for alignment
+        if (options_.alignment && max_port_len > 0) {
+            size_t padding = max_port_len - entry.port->name.length();
+            oss << std::string(padding, ' ');
+        }
+
         if (entry.is_unconnected) {
-            oss << port_indent << "." << entry.port->name << "()";
+            oss << " ()";
         } else {
-            oss << port_indent << "." << entry.port->name << "(" << entry.signal << ")";
+            oss << " (" << entry.signal << ")";
         }
 
         if (i < all_ports.size() - 1) {
