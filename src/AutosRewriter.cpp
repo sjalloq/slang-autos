@@ -289,6 +289,18 @@ std::vector<PortInfo> AutosRewriter::getModulePorts(const std::string& module_na
         PortInfo info;
         info.name = std::string(port->name);
 
+        // Empty port name indicates a parsing failure (e.g., undefined macros in port declaration)
+        if (info.name.empty()) {
+            if (options_.diagnostics) {
+                options_.diagnostics->addError(
+                    "Port with empty name in module '" + module_name +
+                    "' (likely caused by undefined macros in port declaration). "
+                    "Ensure all required macros are defined via +define+ or include files.",
+                    "", 0, "port_parse");
+            }
+            return ports;  // Return empty - caller will handle the error
+        }
+
         if (auto* portSym = port->as_if<PortSymbol>()) {
             switch (portSym->direction) {
                 case ArgumentDirection::In:
