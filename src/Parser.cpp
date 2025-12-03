@@ -468,6 +468,13 @@ InlineConfig parseInlineConfig(const std::string& content) {
             while (iss >> ext) {
                 config.libext.push_back(ext);
             }
+        } else if (key == "incdir") {
+            // Split value by whitespace
+            std::istringstream iss(value);
+            std::string dir;
+            while (iss >> dir) {
+                config.incdirs.push_back(dir);
+            }
         } else if (key == "grouping") {
             if (value == "alphabetical" || value == "alpha") {
                 config.grouping = PortGrouping::Alphabetical;
@@ -475,6 +482,28 @@ InlineConfig parseInlineConfig(const std::string& content) {
                 config.grouping = PortGrouping::ByDirection;
             }
             // Unknown values are silently ignored for forward compatibility
+        } else if (key == "indent") {
+            if (value == "tab") {
+                config.indent = -1;
+            } else {
+                try {
+                    config.indent = std::stoi(value);
+                } catch (...) {
+                    // Invalid value, ignore
+                }
+            }
+        } else if (key == "alignment") {
+            if (value == "true" || value == "1" || value == "yes") {
+                config.alignment = true;
+            } else if (value == "false" || value == "0" || value == "no") {
+                config.alignment = false;
+            }
+        } else if (key == "strictness") {
+            if (value == "strict") {
+                config.strictness = StrictnessMode::Strict;
+            } else if (value == "lenient") {
+                config.strictness = StrictnessMode::Lenient;
+            }
         } else {
             // Store as custom option
             config.custom_options[key] = value;

@@ -16,20 +16,30 @@ namespace slang_autos {
 enum class PortGrouping;
 
 /// Inline configuration parsed from file comments.
-/// Supports verilog-mode style local variables in comments:
+/// Supports local variables in comments:
 ///   // slang-autos-libdir: ./lib ./lib2
 ///   // slang-autos-libext: .v .sv
+///   // slang-autos-incdir: ./include
 ///   // slang-autos-grouping: alphabetical
+///   // slang-autos-indent: 4
+///   // slang-autos-alignment: true
+///   // slang-autos-strictness: lenient
 struct InlineConfig {
     std::vector<std::string> libdirs;   ///< Library directories (-y equivalents)
     std::vector<std::string> libext;    ///< File extensions (+libext+ equivalents)
+    std::vector<std::string> incdirs;   ///< Include directories (+incdir+ equivalents)
     std::optional<PortGrouping> grouping; ///< Port grouping preference
+    std::optional<int> indent;          ///< Indentation spaces (-1 for tab)
+    std::optional<bool> alignment;      ///< Port name alignment
+    std::optional<StrictnessMode> strictness; ///< Strictness mode
     std::unordered_map<std::string, std::string> custom_options; ///< Other options
 
     /// Check if any configuration was found
     [[nodiscard]] bool empty() const {
-        return libdirs.empty() && libext.empty() && !grouping.has_value()
-               && custom_options.empty();
+        return libdirs.empty() && libext.empty() && incdirs.empty() &&
+               !grouping.has_value() && !indent.has_value() &&
+               !alignment.has_value() && !strictness.has_value() &&
+               custom_options.empty();
     }
 };
 
