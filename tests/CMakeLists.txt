@@ -7,6 +7,7 @@ add_executable(slang-autos-tests
     test_writer.cpp
     test_tool.cpp
     test_integration.cpp
+    test_config.cpp
 )
 
 target_link_libraries(slang-autos-tests

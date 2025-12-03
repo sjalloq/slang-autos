@@ -47,6 +47,15 @@ endif()
 # FetchContent for dependencies
 include(FetchContent)
 
+# toml++ - TOML parsing for configuration files
+FetchContent_Declare(
+    tomlplusplus
+    GIT_REPOSITORY https://github.com/marzer/tomlplusplus.git
+    GIT_TAG v3.4.0
+    GIT_SHALLOW ON
+)
+FetchContent_MakeAvailable(tomlplusplus)
+
 # reflect-cpp - JSON serialization (required for LSP)
 if(SLANG_AUTOS_BUILD_LSP)
     FetchContent_Declare(
@@ -78,6 +87,7 @@ add_library(slang-autos-lib
     src/Writer.cpp
     src/Tool.cpp
     src/AutosRewriter.cpp
+    src/Config.cpp
 )
 
 target_include_directories(slang-autos-lib
@@ -89,6 +99,7 @@ target_include_directories(slang-autos-lib
 target_link_libraries(slang-autos-lib
     PUBLIC
         slang::slang
+        tomlplusplus::tomlplusplus
 )
 
 # Enable warnings
