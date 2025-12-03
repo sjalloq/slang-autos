@@ -203,8 +203,11 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // Print diagnostics for this file (warnings even on success)
-        if (verbosity >= 1 && tool.diagnostics().warningCount() > 0) {
+        // Print diagnostics for this file (errors always, warnings on verbose)
+        if (tool.diagnostics().hasErrors()) {
+            any_errors = true;
+            OS::printE(tool.diagnostics().format());
+        } else if (verbosity >= 1 && tool.diagnostics().warningCount() > 0) {
             OS::printE(tool.diagnostics().format());
         }
     }
