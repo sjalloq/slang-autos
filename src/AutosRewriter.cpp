@@ -679,23 +679,7 @@ std::string AutosRewriter::generateFullInstanceText(
     // Module type and instance name (with original indent)
     oss << indent << inst.module_type << " " << inst.instance_name << " (/*AUTOINST*/\n";
 
-    // Group ports by direction
-    std::vector<const PortInfo*> outputs, inputs, inouts;
-    for (const auto& port : ports) {
-        if (inst.manual_ports.count(port.name)) {
-            continue;  // Skip manual ports
-        }
-
-        if (port.direction == "output") {
-            outputs.push_back(&port);
-        } else if (port.direction == "input") {
-            inputs.push_back(&port);
-        } else if (port.direction == "inout") {
-            inouts.push_back(&port);
-        }
-    }
-
-    // Collect all ports with their signal names and group comments
+    // Collect all ports (excluding manual ones)
     struct PortEntry {
         const PortInfo* port;
         std::string signal;
@@ -705,40 +689,74 @@ std::string AutosRewriter::generateFullInstanceText(
     };
     std::vector<PortEntry> all_ports;
 
-    auto addGroup = [&](const std::vector<const PortInfo*>& group,
-                        const std::string& comment) {
-        if (group.empty()) return;
-        bool first = true;
-        for (const auto* port : group) {
-            // Use TemplateMatcher to apply template with @ substitution
-            auto match_result = matcher.matchPort(*port);
+    auto addPort = [&](const PortInfo* port, const std::string& comment) {
+        auto match_result = matcher.matchPort(*port);
 
-            PortEntry entry;
-            entry.port = port;
-            entry.group_comment = first ? comment : "";
-            entry.is_unconnected = false;
-            entry.is_constant = false;
+        PortEntry entry;
+        entry.port = port;
+        entry.group_comment = comment;
+        entry.is_unconnected = false;
+        entry.is_constant = false;
 
-            if (TemplateMatcher::isSpecialValue(match_result.signal_name)) {
-                if (match_result.signal_name == "_") {
-                    entry.is_unconnected = true;
-                    entry.signal = "";
-                } else {
-                    entry.is_constant = true;
-                    entry.signal = TemplateMatcher::formatSpecialValue(match_result.signal_name);
-                }
+        if (TemplateMatcher::isSpecialValue(match_result.signal_name)) {
+            if (match_result.signal_name == "_") {
+                entry.is_unconnected = true;
+                entry.signal = "";
             } else {
-                entry.signal = match_result.signal_name;
+                entry.is_constant = true;
+                entry.signal = TemplateMatcher::formatSpecialValue(match_result.signal_name);
             }
-
-            all_ports.push_back(entry);
-            first = false;
+        } else {
+            entry.signal = match_result.signal_name;
         }
+
+        all_ports.push_back(entry);
     };
 
-    addGroup(outputs, "Outputs");
-    addGroup(inouts, "Inouts");
-    addGroup(inputs, "Inputs");
+    if (options_.grouping == PortGrouping::Alphabetical) {
+        // Alphabetical: collect all ports, sort by name, no group comments
+        std::vector<const PortInfo*> sorted_ports;
+        for (const auto& port : ports) {
+            if (!inst.manual_ports.count(port.name)) {
+                sorted_ports.push_back(&port);
+            }
+        }
+        std::sort(sorted_ports.begin(), sorted_ports.end(),
+            [](const PortInfo* a, const PortInfo* b) {
+                return a->name < b->name;
+            });
+        for (const auto* port : sorted_ports) {
+            addPort(port, "");
+        }
+    } else {
+        // ByDirection: group by direction with comments
+        std::vector<const PortInfo*> outputs, inputs, inouts;
+        for (const auto& port : ports) {
+            if (inst.manual_ports.count(port.name)) {
+                continue;
+            }
+            if (port.direction == "output") {
+                outputs.push_back(&port);
+            } else if (port.direction == "input") {
+                inputs.push_back(&port);
+            } else if (port.direction == "inout") {
+                inouts.push_back(&port);
+            }
+        }
+
+        auto addGroup = [&](const std::vector<const PortInfo*>& group,
+                            const std::string& comment) {
+            bool first = true;
+            for (const auto* port : group) {
+                addPort(port, first ? comment : "");
+                first = false;
+            }
+        };
+
+        addGroup(outputs, "Outputs");
+        addGroup(inouts, "Inouts");
+        addGroup(inputs, "Inputs");
+    }
 
     // Port connections get one additional indent level
     // Use detected indent as the unit (e.g., if instance has 2-space indent, ports get 4)
