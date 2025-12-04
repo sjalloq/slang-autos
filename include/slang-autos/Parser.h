@@ -293,7 +293,12 @@ private:
 /// Searches for comments matching the pattern: // slang-autos-KEY: VALUES
 /// Typically placed at the end of a file, similar to verilog-mode's local variables.
 /// @param content File content to parse
+/// @param file_path Path to source file (for resolving relative paths in validation)
+/// @param diagnostics Optional collector for warnings about invalid values
 /// @return Parsed configuration (may be empty if no config comments found)
-[[nodiscard]] InlineConfig parseInlineConfig(const std::string& content);
+[[nodiscard]] InlineConfig parseInlineConfig(
+    const std::string& content,
+    const std::string& file_path = "",
+    DiagnosticCollector* diagnostics = nullptr);
 
 } // namespace slang_autos

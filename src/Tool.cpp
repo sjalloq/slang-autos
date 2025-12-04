@@ -104,8 +104,8 @@ ExpansionResult AutosTool::expandFile(
     AutoParser parser(&diagnostics_);
     parser.parseText(result.original_content, file.string());
 
-    // Parse inline configuration
-    InlineConfig inline_config = parseInlineConfig(result.original_content);
+    // Parse inline configuration (with validation warnings)
+    InlineConfig inline_config = parseInlineConfig(result.original_content, file.string(), &diagnostics_);
     PortGrouping grouping = inline_config.grouping.value_or(PortGrouping::ByDirection);
 
     // Parse the source with slang's SyntaxTree

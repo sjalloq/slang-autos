@@ -11,6 +11,7 @@
 #include "slang-autos/Writer.h"
 #include "slang-autos/Config.h"
 #include "slang-autos/Parser.h"
+#include "slang-autos/Diagnostics.h"
 
 using namespace slang;
 using namespace slang::driver;
@@ -185,6 +186,8 @@ int main(int argc, char* argv[]) {
     // We need to extract library paths from inline config BEFORE slang parses,
     // otherwise -y, +libext+, +incdir+ directives would be too late.
 
+    DiagnosticCollector prescan_diagnostics;
+
     for (const auto& path : filesToExpand) {
         std::ifstream file(path);
         if (!file) continue;
@@ -193,7 +196,7 @@ int main(int argc, char* argv[]) {
         buffer << file.rdbuf();
         std::string content = buffer.str();
 
-        InlineConfig inline_cfg = parseInlineConfig(content);
+        InlineConfig inline_cfg = parseInlineConfig(content, path.string(), &prescan_diagnostics);
 
         // Resolve paths relative to the source file's directory
         fs::path file_dir = fs::absolute(path).parent_path();
@@ -212,6 +215,20 @@ int main(int argc, char* argv[]) {
             fs::path resolved = (file_dir / dir).lexically_normal();
             driver.sourceManager.addUserDirectories(resolved.string());
         }
+    }
+
+    // Report any inline config diagnostics
+    for (const auto& diag : prescan_diagnostics.diagnostics()) {
+        if (diag.level == DiagnosticLevel::Warning) {
+            std::cerr << "warning: ";
+        } else {
+            std::cerr << "error: ";
+        }
+        std::cerr << diag.message;
+        if (!diag.file_path.empty()) {
+            std::cerr << " [" << diag.file_path << "]";
+        }
+        std::cerr << "\n";
     }
 
     // ========================================================================

@@ -432,8 +432,51 @@ void AutoParser::setTemplateParser(std::unique_ptr<ITemplateParser> parser) {
 // Inline Configuration Parser
 // ============================================================================
 
-InlineConfig parseInlineConfig(const std::string& content) {
+InlineConfig parseInlineConfig(const std::string& content, const std::string& file_path, DiagnosticCollector* diagnostics) {
     InlineConfig config;
+
+    // Determine base directory for resolving relative paths
+    std::filesystem::path base_dir;
+    if (!file_path.empty()) {
+        base_dir = std::filesystem::absolute(file_path).parent_path();
+    } else {
+        base_dir = std::filesystem::current_path();
+    }
+
+    // Helper to emit warnings for invalid values
+    auto warnInvalidValue = [&](const std::string& key, const std::string& value,
+                                 const std::string& valid_values) {
+        if (diagnostics) {
+            diagnostics->addWarning(
+                "Invalid value '" + value + "' for slang-autos-" + key +
+                ". Valid values: " + valid_values,
+                "", 0, "inline_config");
+        }
+    };
+
+    // Helper to validate a directory path exists
+    auto validateDirectory = [&](const std::string& key, const std::string& dir) -> bool {
+        std::filesystem::path resolved = (base_dir / dir).lexically_normal();
+        if (!std::filesystem::exists(resolved)) {
+            if (diagnostics) {
+                diagnostics->addWarning(
+                    "Directory '" + dir + "' for slang-autos-" + key +
+                    " does not exist (resolved to '" + resolved.string() + "')",
+                    file_path, 0, "inline_config");
+            }
+            return false;
+        }
+        if (!std::filesystem::is_directory(resolved)) {
+            if (diagnostics) {
+                diagnostics->addWarning(
+                    "Path '" + dir + "' for slang-autos-" + key +
+                    " is not a directory (resolved to '" + resolved.string() + "')",
+                    file_path, 0, "inline_config");
+            }
+            return false;
+        }
+        return true;
+    };
 
     // Pattern: // slang-autos-KEY: VALUES
     // We look for single-line comments with the slang-autos- prefix
@@ -459,6 +502,7 @@ InlineConfig parseInlineConfig(const std::string& content) {
             std::istringstream iss(value);
             std::string dir;
             while (iss >> dir) {
+                validateDirectory(key, dir);
                 config.libdirs.push_back(dir);
             }
         } else if (key == "libext") {
@@ -466,6 +510,14 @@ InlineConfig parseInlineConfig(const std::string& content) {
             std::istringstream iss(value);
             std::string ext;
             while (iss >> ext) {
+                if (!ext.empty() && ext[0] != '.') {
+                    if (diagnostics) {
+                        diagnostics->addWarning(
+                            "Extension '" + ext + "' does not start with '.', adding it",
+                            "", 0, "inline_config");
+                    }
+                    ext = "." + ext;
+                }
                 config.libext.push_back(ext);
             }
         } else if (key == "incdir") {
@@ -473,6 +525,7 @@ InlineConfig parseInlineConfig(const std::string& content) {
             std::istringstream iss(value);
             std::string dir;
             while (iss >> dir) {
+                validateDirectory(key, dir);
                 config.incdirs.push_back(dir);
             }
         } else if (key == "grouping") {
@@ -480,16 +533,22 @@ InlineConfig parseInlineConfig(const std::string& content) {
                 config.grouping = PortGrouping::Alphabetical;
             } else if (value == "direction" || value == "bydirection") {
                 config.grouping = PortGrouping::ByDirection;
+            } else {
+                warnInvalidValue(key, value, "alphabetical, alpha, direction, bydirection");
             }
-            // Unknown values are silently ignored for forward compatibility
         } else if (key == "indent") {
             if (value == "tab") {
                 config.indent = -1;
             } else {
                 try {
-                    config.indent = std::stoi(value);
+                    int indent_val = std::stoi(value);
+                    if (indent_val < 0 || indent_val > 16) {
+                        warnInvalidValue(key, value, "tab, or 0-16");
+                    } else {
+                        config.indent = indent_val;
+                    }
                 } catch (...) {
-                    // Invalid value, ignore
+                    warnInvalidValue(key, value, "tab, or a number (0-16)");
                 }
             }
         } else if (key == "alignment") {
@@ -497,15 +556,25 @@ InlineConfig parseInlineConfig(const std::string& content) {
                 config.alignment = true;
             } else if (value == "false" || value == "0" || value == "no") {
                 config.alignment = false;
+            } else {
+                warnInvalidValue(key, value, "true, false, yes, no, 1, 0");
             }
         } else if (key == "strictness") {
             if (value == "strict") {
                 config.strictness = StrictnessMode::Strict;
             } else if (value == "lenient") {
                 config.strictness = StrictnessMode::Lenient;
+            } else {
+                warnInvalidValue(key, value, "strict, lenient");
             }
         } else {
-            // Store as custom option
+            // Unknown key - warn and store as custom option
+            if (diagnostics) {
+                diagnostics->addWarning(
+                    "Unknown inline config key 'slang-autos-" + key + "'. "
+                    "Valid keys: libdir, libext, incdir, grouping, indent, alignment, strictness",
+                    "", 0, "inline_config");
+            }
             config.custom_options[key] = value;
         }
     }
