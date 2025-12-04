@@ -83,10 +83,6 @@ int main(int argc, char* argv[]) {
                        "Error on missing modules (default: warn and continue)");
 
     // Formatting options
-    std::optional<uint32_t> indentSpaces;
-    driver.cmdLine.add("--indent", indentSpaces,
-                       "Indentation width in spaces (default: 4)", "<width>");
-
     std::optional<bool> noAlignment;
     driver.cmdLine.add("--no-alignment", noAlignment, "Don't align port names");
 
@@ -146,7 +142,7 @@ int main(int argc, char* argv[]) {
     CliFlags cli_flags;
     cli_flags.has_strictness = strictMode.has_value();
     cli_flags.has_alignment = noAlignment.has_value();
-    cli_flags.has_indent = indentSpaces.has_value();
+    cli_flags.has_indent = false;  // No CLI --indent option anymore
     cli_flags.has_verbosity = verbose.has_value() || quiet.has_value();
     cli_flags.has_single_unit = noSingleUnit.has_value();
 
@@ -155,7 +151,7 @@ int main(int argc, char* argv[]) {
     cli_options.strictness = strictMode.value_or(false) ? StrictnessMode::Strict
                                                         : StrictnessMode::Lenient;
     cli_options.alignment = !noAlignment.value_or(false);
-    cli_options.indent = std::string(indentSpaces.value_or(4), ' ');
+    cli_options.indent = "  ";  // Default 2 spaces (can be overridden by file config or inline)
     cli_options.verbosity = quiet.value_or(false) ? 0 : (verbose.value_or(false) ? 2 : 1);
     cli_options.single_unit = !noSingleUnit.value_or(false);
 
@@ -185,8 +181,10 @@ int main(int argc, char* argv[]) {
     // ========================================================================
     // We need to extract library paths from inline config BEFORE slang parses,
     // otherwise -y, +libext+, +incdir+ directives would be too late.
+    // We also store the full inline config per-file to avoid re-parsing later.
 
     DiagnosticCollector prescan_diagnostics;
+    std::unordered_map<std::string, InlineConfig> inline_configs;
 
     for (const auto& path : filesToExpand) {
         std::ifstream file(path);
@@ -197,6 +195,9 @@ int main(int argc, char* argv[]) {
         std::string content = buffer.str();
 
         InlineConfig inline_cfg = parseInlineConfig(content, path.string(), &prescan_diagnostics);
+
+        // Store for later use (avoids re-parsing in Tool::expandFile)
+        inline_configs[path.string()] = inline_cfg;
 
         // Resolve paths relative to the source file's directory
         fs::path file_dir = fs::absolute(path).parent_path();
@@ -265,6 +266,12 @@ int main(int argc, char* argv[]) {
         // Expand autos in this file
         AutosTool tool(options);
         tool.setCompilation(std::move(compilation));
+
+        // Pass pre-parsed inline config (avoids re-parsing)
+        auto it = inline_configs.find(path.string());
+        if (it != inline_configs.end()) {
+            tool.setInlineConfig(path, it->second);
+        }
 
         auto result = tool.expandFile(path, dry_run || diff_mode);
 

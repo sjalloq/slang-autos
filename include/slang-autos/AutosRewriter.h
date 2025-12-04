@@ -23,13 +23,14 @@ class Compilation;
 namespace slang_autos {
 
 /// Configuration options for AutosRewriter
+/// NOTE: Values should be set from AutosToolOptions (which comes from MergedConfig)
 struct AutosRewriterOptions {
-    bool use_logic = true;          ///< Use 'logic' instead of 'wire'
-    bool alignment = true;          ///< Align port names
-    std::string indent = "    ";    ///< Indentation string
-    PortGrouping grouping = PortGrouping::ByDirection;
-    StrictnessMode strictness = StrictnessMode::Lenient;
-    DiagnosticCollector* diagnostics = nullptr;
+    bool use_logic{};               ///< Use 'logic' instead of 'wire'
+    bool alignment{};               ///< Align port names
+    std::string indent;             ///< Indentation string (set from config)
+    PortGrouping grouping{};        ///< Port grouping mode
+    StrictnessMode strictness{};    ///< Error handling mode
+    DiagnosticCollector* diagnostics = nullptr;  ///< Optional diagnostics collector
 };
 
 /// Unified rewriter that handles all AUTO macro expansions in a single pass.

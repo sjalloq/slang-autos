@@ -56,7 +56,7 @@ struct MergedConfig {
     std::vector<std::string> incdirs;
 
     // Formatting (override semantics)
-    std::string indent = "    ";    ///< Default: 4 spaces
+    std::string indent = "  ";      ///< Default: 2 spaces
     bool alignment = true;
 
     // Behavior (override semantics)

@@ -37,12 +37,14 @@ struct ExpansionResult {
 };
 
 /// Configuration options for AutosTool
+/// NOTE: In production, values are set from MergedConfig via toToolOptions().
+///       Defaults here are for direct use (e.g., tests).
 struct AutosToolOptions {
     StrictnessMode strictness = StrictnessMode::Lenient;
-    bool alignment = true;      ///< Align port names in output
-    std::string indent = "    ";///< Indentation string
-    int verbosity = 0;          ///< 0=quiet, 1=normal, 2=verbose, 3=debug
-    bool single_unit = true;    ///< Treat all files as single compilation unit
+    bool alignment = true;
+    std::string indent = "  ";  ///< Default 2 spaces (matches MergedConfig)
+    int verbosity = 1;
+    bool single_unit = true;
 };
 
 /// Main orchestrator for AUTO macro expansion.
@@ -89,7 +91,12 @@ public:
     /// Set options
     void setOptions(const Options& options) { options_ = options; }
 
+    /// Set pre-parsed inline config for a file (avoids double-parsing)
+    void setInlineConfig(const std::filesystem::path& file, const InlineConfig& config);
+
 private:
+    /// Get inline config for a file (returns empty config if not set)
+    [[nodiscard]] InlineConfig getInlineConfig(const std::filesystem::path& file) const;
     /// Extract port information for a module from compilation
     std::vector<PortInfo> getModulePorts(const std::string& module_name);
 
@@ -100,6 +107,9 @@ private:
 
     /// Cache for module port lookups (avoids repeated AST traversal)
     std::unordered_map<std::string, std::vector<PortInfo>> port_cache_;
+
+    /// Pre-parsed inline configs per file (set by main.cpp, avoids double-parsing)
+    std::unordered_map<std::string, InlineConfig> inline_configs_;
 };
 
 } // namespace slang_autos

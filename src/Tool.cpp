@@ -104,8 +104,8 @@ ExpansionResult AutosTool::expandFile(
     AutoParser parser(&diagnostics_);
     parser.parseText(result.original_content, file.string());
 
-    // Parse inline configuration (with validation warnings)
-    InlineConfig inline_config = parseInlineConfig(result.original_content, file.string(), &diagnostics_);
+    // Get pre-parsed inline configuration (parsed once in main.cpp)
+    InlineConfig inline_config = getInlineConfig(file);
     PortGrouping grouping = inline_config.grouping.value_or(PortGrouping::ByDirection);
 
     // Parse the source with slang's SyntaxTree
@@ -118,12 +118,26 @@ ExpansionResult AutosTool::expandFile(
     }
 
     // Configure rewriter options
+    // Priority: Inline > File > Detect > Default
     AutosRewriterOptions rewriter_opts;
     rewriter_opts.use_logic = true;
-    rewriter_opts.alignment = options_.alignment;
-    rewriter_opts.indent = options_.indent;
+    rewriter_opts.alignment = inline_config.alignment.value_or(options_.alignment);
+
+    // Handle indent: inline config overrides file config/default
+    if (inline_config.indent.has_value()) {
+        int indent_val = *inline_config.indent;
+        if (indent_val == -1) {
+            rewriter_opts.indent = "\t";
+        } else {
+            rewriter_opts.indent = std::string(static_cast<size_t>(indent_val), ' ');
+        }
+    } else {
+        // Use file config or default (detect fallback handled in rewriter)
+        rewriter_opts.indent = options_.indent;
+    }
+
     rewriter_opts.grouping = grouping;
-    rewriter_opts.strictness = options_.strictness;
+    rewriter_opts.strictness = inline_config.strictness.value_or(options_.strictness);
     rewriter_opts.diagnostics = &diagnostics_;
 
     // Create unified rewriter with templates from parser
@@ -464,6 +478,18 @@ std::vector<PortInfo> AutosTool::getModulePorts(const std::string& module_name) 
     // Cache result for future lookups
     port_cache_[module_name] = ports;
     return ports;
+}
+
+void AutosTool::setInlineConfig(const std::filesystem::path& file, const InlineConfig& config) {
+    inline_configs_[file.string()] = config;
+}
+
+InlineConfig AutosTool::getInlineConfig(const std::filesystem::path& file) const {
+    auto it = inline_configs_.find(file.string());
+    if (it != inline_configs_.end()) {
+        return it->second;
+    }
+    return InlineConfig{};  // Empty config if not found
 }
 
 } // namespace slang_autos

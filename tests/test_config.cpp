@@ -178,7 +178,7 @@ TEST_CASE("ConfigLoader::merge - uses defaults when no config", "[config]") {
 
     auto merged = ConfigLoader::merge(std::nullopt, inline_cfg, cli_opts, cli_flags);
 
-    CHECK(merged.indent == "    ");  // 4 spaces default
+    CHECK(merged.indent == "  ");  // 2 spaces default
     CHECK(merged.alignment == true);
     CHECK(merged.strictness == StrictnessMode::Lenient);
     CHECK(merged.verbosity == 1);
