@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 
@@ -398,4 +399,125 @@ TEST_CASE("parseInlineConfig - parses strictness", "[config]") {
 
     REQUIRE(config.strictness.has_value());
     CHECK(*config.strictness == StrictnessMode::Strict);
+}
+
+// ============================================================================
+// Environment Variable Expansion Tests
+// ============================================================================
+
+TEST_CASE("expandEnvironmentVariables - expands $VAR form", "[config]") {
+    // Set a test environment variable
+    setenv("SLANG_AUTOS_TEST_VAR", "/test/path", 1);
+
+    CHECK(expandEnvironmentVariables("$SLANG_AUTOS_TEST_VAR") == "/test/path");
+    CHECK(expandEnvironmentVariables("$SLANG_AUTOS_TEST_VAR/lib") == "/test/path/lib");
+    CHECK(expandEnvironmentVariables("prefix/$SLANG_AUTOS_TEST_VAR/suffix") == "prefix//test/path/suffix");
+
+    unsetenv("SLANG_AUTOS_TEST_VAR");
+}
+
+TEST_CASE("expandEnvironmentVariables - expands ${VAR} form", "[config]") {
+    setenv("SLANG_AUTOS_TEST_VAR", "/braced/path", 1);
+
+    CHECK(expandEnvironmentVariables("${SLANG_AUTOS_TEST_VAR}") == "/braced/path");
+    CHECK(expandEnvironmentVariables("${SLANG_AUTOS_TEST_VAR}/lib") == "/braced/path/lib");
+    CHECK(expandEnvironmentVariables("prefix/${SLANG_AUTOS_TEST_VAR}/suffix") == "prefix//braced/path/suffix");
+
+    unsetenv("SLANG_AUTOS_TEST_VAR");
+}
+
+TEST_CASE("expandEnvironmentVariables - expands $(VAR) form", "[config]") {
+    setenv("SLANG_AUTOS_TEST_VAR", "/paren/path", 1);
+
+    CHECK(expandEnvironmentVariables("$(SLANG_AUTOS_TEST_VAR)") == "/paren/path");
+    CHECK(expandEnvironmentVariables("$(SLANG_AUTOS_TEST_VAR)/lib") == "/paren/path/lib");
+
+    unsetenv("SLANG_AUTOS_TEST_VAR");
+}
+
+TEST_CASE("expandEnvironmentVariables - unset variables report error", "[config]") {
+    // Make sure the variable doesn't exist
+    unsetenv("SLANG_AUTOS_NONEXISTENT_VAR");
+
+    DiagnosticCollector diag;
+
+    // Without diagnostics, still expands to empty (for backward compat)
+    CHECK(expandEnvironmentVariables("$SLANG_AUTOS_NONEXISTENT_VAR") == "");
+
+    // With diagnostics, errors are reported
+    CHECK(expandEnvironmentVariables("$SLANG_AUTOS_NONEXISTENT_VAR", &diag) == "");
+    REQUIRE(diag.errorCount() == 1);
+    CHECK(diag.diagnostics()[0].message.find("SLANG_AUTOS_NONEXISTENT_VAR") != std::string::npos);
+    CHECK(diag.diagnostics()[0].message.find("not set") != std::string::npos);
+
+    diag.clear();
+    CHECK(expandEnvironmentVariables("${SLANG_AUTOS_NONEXISTENT_VAR}", &diag) == "");
+    REQUIRE(diag.errorCount() == 1);
+
+    diag.clear();
+    CHECK(expandEnvironmentVariables("prefix/$SLANG_AUTOS_NONEXISTENT_VAR/suffix", &diag) == "prefix//suffix");
+    REQUIRE(diag.errorCount() == 1);
+}
+
+TEST_CASE("expandEnvironmentVariables - preserves non-variable text", "[config]") {
+    CHECK(expandEnvironmentVariables("no variables here") == "no variables here");
+    CHECK(expandEnvironmentVariables("./relative/path") == "./relative/path");
+    CHECK(expandEnvironmentVariables("/absolute/path") == "/absolute/path");
+}
+
+TEST_CASE("expandEnvironmentVariables - handles edge cases", "[config]") {
+    CHECK(expandEnvironmentVariables("") == "");
+    CHECK(expandEnvironmentVariables("$") == "$");
+    CHECK(expandEnvironmentVariables("$$") == "$$");
+    CHECK(expandEnvironmentVariables("${") == "${");
+    CHECK(expandEnvironmentVariables("${unclosed") == "${unclosed");
+    CHECK(expandEnvironmentVariables("$(unclosed") == "$(unclosed");
+}
+
+TEST_CASE("expandEnvironmentVariables - multiple variables", "[config]") {
+    setenv("SLANG_AUTOS_VAR1", "first", 1);
+    setenv("SLANG_AUTOS_VAR2", "second", 1);
+
+    CHECK(expandEnvironmentVariables("$SLANG_AUTOS_VAR1/$SLANG_AUTOS_VAR2") == "first/second");
+    CHECK(expandEnvironmentVariables("${SLANG_AUTOS_VAR1}${SLANG_AUTOS_VAR2}") == "firstsecond");
+
+    unsetenv("SLANG_AUTOS_VAR1");
+    unsetenv("SLANG_AUTOS_VAR2");
+}
+
+TEST_CASE("parseInlineConfig - expands environment variables in libdir", "[config]") {
+    setenv("SLANG_AUTOS_LIB", "/custom/lib", 1);
+
+    std::string content = "// slang-autos-libdir: $SLANG_AUTOS_LIB\n";
+    auto config = parseInlineConfig(content);
+
+    REQUIRE(config.libdirs.size() == 1);
+    CHECK(config.libdirs[0] == "/custom/lib");
+
+    unsetenv("SLANG_AUTOS_LIB");
+}
+
+TEST_CASE("parseInlineConfig - expands ${VAR} in libdir", "[config]") {
+    setenv("SLANG_AUTOS_ROOT", "/project", 1);
+
+    std::string content = "// slang-autos-libdir: ${SLANG_AUTOS_ROOT}/rtl ${SLANG_AUTOS_ROOT}/lib\n";
+    auto config = parseInlineConfig(content);
+
+    REQUIRE(config.libdirs.size() == 2);
+    CHECK(config.libdirs[0] == "/project/rtl");
+    CHECK(config.libdirs[1] == "/project/lib");
+
+    unsetenv("SLANG_AUTOS_ROOT");
+}
+
+TEST_CASE("parseInlineConfig - expands environment variables in incdir", "[config]") {
+    setenv("SLANG_AUTOS_INC", "/include/path", 1);
+
+    std::string content = "// slang-autos-incdir: $SLANG_AUTOS_INC\n";
+    auto config = parseInlineConfig(content);
+
+    REQUIRE(config.incdirs.size() == 1);
+    CHECK(config.incdirs[0] == "/include/path");
+
+    unsetenv("SLANG_AUTOS_INC");
 }

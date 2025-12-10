@@ -1,5 +1,6 @@
 #include "slang-autos/Parser.h"
 
+#include <cstdlib>
 #include <fstream>
 #include <regex>
 #include <sstream>
@@ -13,6 +14,90 @@
 #include "slang/text/SourceManager.h"
 
 namespace slang_autos {
+
+// ============================================================================
+// Environment Variable Expansion
+// ============================================================================
+
+/// Helper to check if a character is valid in an environment variable name
+static bool isEnvVarChar(char c) {
+    return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+}
+
+/// Expand environment variables in a string.
+/// Supports three forms: $VAR, ${VAR}, and $(VAR)
+/// If a variable is not set, an error is reported via diagnostics.
+std::string expandEnvironmentVariables(const std::string& input, DiagnosticCollector* diagnostics) {
+    std::string result;
+    result.reserve(input.size());
+
+    const char* ptr = input.data();
+    const char* end = ptr + input.size();
+
+    while (ptr != end) {
+        char c = *ptr++;
+        if (c != '$') {
+            result += c;
+            continue;
+        }
+
+        // Found a '$', check what follows
+        if (ptr == end) {
+            // '$' at end of string, keep it literal
+            result += '$';
+            continue;
+        }
+
+        c = *ptr;
+        if (c == '(' || c == '{') {
+            // ${VAR} or $(VAR) form
+            char endDelim = (c == '{') ? '}' : ')';
+            ++ptr; // skip opening delimiter
+
+            std::string varName;
+            while (ptr != end && *ptr != endDelim) {
+                varName += *ptr++;
+            }
+
+            if (ptr != end && *ptr == endDelim) {
+                ++ptr; // skip closing delimiter
+                // Look up the environment variable
+                if (const char* value = std::getenv(varName.c_str())) {
+                    result += value;
+                } else if (diagnostics) {
+                    diagnostics->addError(
+                        "Environment variable '" + varName + "' is not set",
+                        "", 0, "inline_config");
+                }
+            } else {
+                // No closing delimiter found, keep literal
+                result += '$';
+                result += (endDelim == '}') ? '{' : '(';
+                result += varName;
+            }
+        } else if (isEnvVarChar(c)) {
+            // $VAR form (no delimiters)
+            std::string varName;
+            while (ptr != end && isEnvVarChar(*ptr)) {
+                varName += *ptr++;
+            }
+            // Look up the environment variable
+            if (const char* value = std::getenv(varName.c_str())) {
+                result += value;
+            } else if (diagnostics) {
+                diagnostics->addError(
+                    "Environment variable '" + varName + "' is not set",
+                    "", 0, "inline_config");
+            }
+        } else {
+            // Not a valid variable reference, keep the '$' literal
+            result += '$';
+            // Don't consume the character, it will be processed in the next iteration
+        }
+    }
+
+    return result;
+}
 
 // ============================================================================
 // TriviaCollector - SyntaxVisitor for collecting AUTO comments from trivia
@@ -496,6 +581,9 @@ InlineConfig parseInlineConfig(const std::string& content, const std::string& fi
         while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back()))) {
             value.pop_back();
         }
+
+        // Expand environment variables in the value
+        value = expandEnvironmentVariables(value, diagnostics);
 
         if (key == "libdir") {
             // Split value by whitespace

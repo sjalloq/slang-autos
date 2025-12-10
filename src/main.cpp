@@ -5,6 +5,7 @@
 
 #include "slang/driver/Driver.h"
 #include "slang/ast/Compilation.h"
+#include "slang/diagnostics/AllDiags.h"
 #include "slang/util/VersionInfo.h"
 
 #include "slang-autos/Tool.h"
@@ -262,6 +263,27 @@ int main(int argc, char* argv[]) {
 
         // Create compilation with this top module (reuses parsed syntax trees)
         auto compilation = driver.createCompilation();
+
+        // Check for InvalidTopModule error (module name doesn't match filename)
+        {
+            auto& diags = compilation->getAllDiagnostics();
+            bool hasInvalidTop = false;
+            for (const auto& d : diags) {
+                if (d.code == slang::diag::InvalidTopModule) {
+                    hasInvalidTop = true;
+                    break;
+                }
+            }
+            if (hasInvalidTop) {
+                any_errors = true;
+                OS::printE(fmt::format(
+                    "error: {}: Module name does not match filename.\n"
+                    "       Expected module '{}' but it was not found.\n"
+                    "       slang-autos requires the module name to match the filename.\n",
+                    path.string(), path.stem().string()));
+                continue;
+            }
+        }
 
         // Expand autos in this file
         AutosTool tool(options);

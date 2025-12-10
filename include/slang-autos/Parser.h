@@ -286,6 +286,19 @@ private:
 };
 
 // ============================================================================
+// Environment Variable Expansion
+// ============================================================================
+
+/// Expand environment variables in a string.
+/// Supports three forms: $VAR, ${VAR}, and $(VAR)
+/// @param input String containing environment variable references
+/// @param diagnostics Optional collector for errors (undefined variables)
+/// @return String with all environment variables expanded (undefined vars become empty)
+[[nodiscard]] std::string expandEnvironmentVariables(
+    const std::string& input,
+    DiagnosticCollector* diagnostics = nullptr);
+
+// ============================================================================
 // Inline Configuration Parser
 // ============================================================================
 
