@@ -499,6 +499,64 @@ TEST_CASE("AUTOPORTS - basic port generation", "[integration][autoports]") {
     CHECK(result.modified_content.find("data_in") != std::string::npos);
 }
 
+TEST_CASE("AUTOPORTS - preserves user-defined ports", "[integration][autoports]") {
+    // This tests that user-defined ports before /*AUTOPORTS*/ are preserved.
+    // Also tests the case where a signal is connected between submodule I/Os
+    // (would be classified as "internal net" by aggregator) but is declared
+    // as a user port and should remain a port, not become a wire.
+    auto top_sv = getFixturePath("autoports_user_defined/top.sv");
+    auto lib_dir = getFixturePath("autoports_user_defined/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+
+    CHECK(result.success);
+
+    // User-defined port should be preserved (not overwritten)
+    // Note: some_sig is connected between producer output and consumer input,
+    // so the aggregator would classify it as "internal", but since user declared
+    // it as a port, it should remain a port.
+    CHECK(result.modified_content.find("output logic [2:0] some_sig") != std::string::npos);
+
+    // The marker should still be present
+    CHECK(result.modified_content.find("/*AUTOPORTS*/") != std::string::npos);
+
+    // Auto-generated ports should also be present
+    CHECK(result.modified_content.find("data_out") != std::string::npos);
+    CHECK(result.modified_content.find("data_in") != std::string::npos);
+    CHECK(result.modified_content.find("clk") != std::string::npos);
+    CHECK(result.modified_content.find("rst_n") != std::string::npos);
+
+    // AUTOWIRE should NOT generate a wire for some_sig (it's a user port)
+    // Count occurrences of some_sig - it should only appear in port declaration
+    // and AUTOINST connections, not in AUTOWIRE
+    size_t autowire_pos = result.modified_content.find("/*AUTOWIRE*/");
+    if (autowire_pos != std::string::npos) {
+        // Check that there's no wire declaration for some_sig after AUTOWIRE
+        size_t some_sig_after_autowire = result.modified_content.find("wire", autowire_pos);
+        // If there's no wire section at all, or some_sig isn't in it, that's correct
+        if (some_sig_after_autowire != std::string::npos) {
+            size_t end_marker = result.modified_content.find("// End of automatics", autowire_pos);
+            if (end_marker != std::string::npos) {
+                std::string wire_section = result.modified_content.substr(autowire_pos, end_marker - autowire_pos);
+                // some_sig should NOT be declared as a wire
+                CHECK(wire_section.find("some_sig") == std::string::npos);
+            }
+        }
+    }
+}
+
 // =============================================================================
 // CLI Behavior Tests (run actual binary)
 // =============================================================================
