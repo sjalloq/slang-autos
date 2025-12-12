@@ -902,52 +902,47 @@ void AutosRewriter::queueAutoportsExpansion(
     filterExisting(outputs);
     filterExisting(inouts);
 
-    // Build user port text (ports declared before /*AUTOPORTS*/)
-    // These must be preserved in the output
-    std::ostringstream user_port_oss;
-    std::string indent = options_.indent;  // Use configured indentation
-    for (size_t i = 0; i < info.user_ports.size(); ++i) {
-        const auto* port = info.user_ports[i];
-        // Get the port text, stripping any leading/trailing whitespace
-        std::string port_text = std::string(port->toString());
-
-        // Remove leading whitespace (but preserve the actual declaration)
-        size_t start = port_text.find_first_not_of(" \t\n\r");
+    // Helper to trim whitespace from port text
+    auto trimPort = [](const std::string& text) {
+        std::string result = text;
+        size_t start = result.find_first_not_of(" \t\n\r");
         if (start != std::string::npos) {
-            port_text = port_text.substr(start);
+            result = result.substr(start);
         }
-        // Remove trailing whitespace
-        size_t end = port_text.find_last_not_of(" \t\n\r");
+        size_t end = result.find_last_not_of(" \t\n\r");
         if (end != std::string::npos) {
-            port_text = port_text.substr(0, end + 1);
+            result = result.substr(0, end + 1);
         }
+        return result;
+    };
 
-        if (i == 0) {
-            user_port_oss << "\n" << indent << port_text;
-        } else {
-            user_port_oss << "\n" << indent << port_text;
+    // Helper to format an auto-generated port (no alignment, let verible handle it)
+    std::string type_str = options_.use_logic ? "logic" : "wire";
+    auto formatAutoPort = [&](const std::string& direction, const NetInfo& net) {
+        std::ostringstream port_oss;
+        port_oss << direction << " " << type_str;
+        std::string range = net.getRangeStr();
+        if (!range.empty()) {
+            port_oss << " " << range;
         }
-        // Always add comma after user ports (there will be AUTOPORTS marker or auto-gen ports after)
-        user_port_oss << ",";
-    }
-    std::string user_ports_text = user_port_oss.str();
+        port_oss << " " << net.name;
+        return port_oss.str();
+    };
 
     // If nothing to generate but we have user ports, still need to preserve marker and user ports
     if (inputs.empty() && outputs.empty() && inouts.empty()) {
-        // Even with no auto-generated ports, we need to preserve user ports
-        std::string wrapper;
-        if (!info.user_ports.empty()) {
-            // Remove trailing comma from user ports (no auto ports follow)
-            if (!user_ports_text.empty() && user_ports_text.back() == ',') {
-                user_ports_text.pop_back();
-            }
-            wrapper = "module _wrapper_(" + user_ports_text + "\n" + indent + "/*AUTOPORTS*/\n);\nendmodule\n";
-        } else {
-            wrapper = "module _wrapper_(/*AUTOPORTS*/\n);\nendmodule\n";
+        std::ostringstream oss;
+        for (size_t i = 0; i < info.user_ports.size(); ++i) {
+            oss << "\n" << trimPort(std::string(info.user_ports[i]->toString()));
         }
+        if (!info.user_ports.empty()) {
+            oss << "\n";
+        }
+        oss << "/*AUTOPORTS*/";
+
+        std::string wrapper = "module _wrapper_(" + oss.str() + "\n);\nendmodule\n";
         auto& parsed = parse(wrapper);
 
-        // Find the parsed module
         const ModuleDeclarationSyntax* parsed_mod = nullptr;
         if (parsed.kind == SyntaxKind::ModuleDeclaration) {
             parsed_mod = &parsed.as<ModuleDeclarationSyntax>();
@@ -961,81 +956,48 @@ void AutosRewriter::queueAutoportsExpansion(
             }
         }
 
-        // Replace the entire port list with one that preserves user ports and marker
         if (parsed_mod && parsed_mod->header->ports) {
             replace(*info.ansi_ports, *parsed_mod->header->ports);
         }
         return;
     }
 
-    // Note: We replace the entire port list (not remove+insert individual ports)
-    // This ensures proper formatting of the closing );
-
     // Generate port declaration text
     std::ostringstream oss;
-    std::string type_str = options_.use_logic ? "logic" : "wire";
 
-    // Collect all ports with their directions
-    struct PortEntry {
-        const NetInfo* net;
-        std::string direction;
-    };
-    std::vector<PortEntry> all_ports;
+    // First, output user ports (preserved as-is, just trimmed)
+    for (const auto* port : info.user_ports) {
+        oss << "\n" << trimPort(std::string(port->toString())) << ",";
+    }
 
+    // Add AUTOPORTS marker on its own line
+    if (!info.user_ports.empty()) {
+        oss << "\n";
+    }
+    oss << "/*AUTOPORTS*/";
+
+    // Then output auto-generated ports
+    std::vector<std::pair<std::string, const NetInfo*>> all_auto_ports;
     for (const auto& net : outputs) {
-        all_ports.push_back({&net, "output"});
+        all_auto_ports.push_back({"output", &net});
     }
     for (const auto& net : inouts) {
-        all_ports.push_back({&net, "inout"});
+        all_auto_ports.push_back({"inout", &net});
     }
     for (const auto& net : inputs) {
-        all_ports.push_back({&net, "input"});
+        all_auto_ports.push_back({"input", &net});
     }
 
-    // Find maximum range width for alignment
-    size_t max_range_width = 0;
-    for (const auto& entry : all_ports) {
-        std::string range = entry.net->getRangeStr();
-        if (range.length() > max_range_width) {
-            max_range_width = range.length();
-        }
-    }
-
-    // Build port list for wrapper module
-    // Include AUTOPORTS marker before the first port so it stays in the right position
-    // (becomes leading trivia on the first generated port)
-    for (size_t i = 0; i < all_ports.size(); ++i) {
-        const auto& entry = all_ports[i];
-
-        if (i == 0) {
-            // First port: marker immediately after (, then newline and indent for port
-            oss << "/*AUTOPORTS*/\n" << indent;
-        } else {
-            oss << "\n" << indent;
-        }
-
-        // Pad direction to align 'logic' (output=6, input=5, inout=5)
-        oss << std::left << std::setw(6) << entry.direction << " " << type_str;
-
-        // Pad range to align signal names
-        std::string range = entry.net->getRangeStr();
-        if (max_range_width > 0) {
-            oss << " " << std::left << std::setw(static_cast<int>(max_range_width)) << range;
-        }
-
-        oss << " " << entry.net->name;
-
-        if (i < all_ports.size() - 1) {
+    for (size_t i = 0; i < all_auto_ports.size(); ++i) {
+        const auto& [direction, net] = all_auto_ports[i];
+        oss << "\n" << formatAutoPort(direction, *net);
+        if (i < all_auto_ports.size() - 1) {
             oss << ",";
         }
     }
 
     std::string port_text = oss.str();
-
-    // Wrap in a module to parse as ANSI port list
-    // Format: (user_ports, /*AUTOPORTS*/\n  auto_ports...\n);
-    // user_ports_text already has trailing comma if non-empty
-    std::string wrapper = "module _wrapper_(" + user_ports_text + port_text + "\n);\nendmodule\n";
+    std::string wrapper = "module _wrapper_(" + port_text + "\n);\nendmodule\n";
     auto& parsed = parse(wrapper);
 
     // Find the parsed module
