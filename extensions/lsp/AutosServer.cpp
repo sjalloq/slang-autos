@@ -146,7 +146,7 @@ ExpandResult AutosServer::expandAutos(const std::string& fileUri) {
 
     // Store counts
     result.autoinst_count = expansionResult.autoinst_count;
-    result.autowire_count = expansionResult.autowire_count;
+    result.autologic_count = expansionResult.autologic_count;
 
     if (!expansionResult.hasChanges()) {
         std::cerr << "No changes needed\n";
@@ -175,8 +175,8 @@ ExpandResult AutosServer::expandAutos(const std::string& fileUri) {
     // Add success message
     std::stringstream ss;
     ss << "Expanded " << expansionResult.autoinst_count << " AUTOINST";
-    if (expansionResult.autowire_count > 0) {
-        ss << ", " << expansionResult.autowire_count << " AUTOWIRE";
+    if (expansionResult.autologic_count > 0) {
+        ss << ", " << expansionResult.autologic_count << " AUTOLOGIC";
     }
     result.messages.push_back(ss.str());
 

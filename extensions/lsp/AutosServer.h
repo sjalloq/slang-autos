@@ -22,7 +22,7 @@ struct ExpandResult {
     std::vector<std::string> warnings;  // Warning messages
     std::vector<std::string> errors;    // Error messages
     int autoinst_count = 0;
-    int autowire_count = 0;
+    int autologic_count = 0;
 };
 
 /// LSP server that provides AUTO expansion via workspace/executeCommand.

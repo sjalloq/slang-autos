@@ -360,7 +360,7 @@ interface ExpandResult {
     warnings: string[];   // Warning messages
     errors: string[];     // Error messages
     autoinst_count: number;
-    autowire_count: number;
+    autologic_count: number;
 }
 
 function convertToWorkspaceEdit(result: WorkspaceEditResult): vscode.WorkspaceEdit {

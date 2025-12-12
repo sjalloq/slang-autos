@@ -432,3 +432,39 @@ TEST_CASE("TemplateMatcher - math function edge cases", "[template][math]") {
         CHECK(result.signal_name == "regular_signal");
     }
 }
+
+TEST_CASE("TemplateMatcher - invalid regex warnings", "[template][errors]") {
+    DiagnosticCollector diag;
+
+    SECTION("invalid port pattern emits warning") {
+        AutoTemplate tmpl;
+        tmpl.module_name = "submod";
+        // Invalid regex: unmatched bracket
+        tmpl.rules.emplace_back("[invalid", "signal_$1");
+
+        TemplateMatcher matcher(&tmpl, &diag);
+        matcher.setInstance("u_sub");
+
+        PortInfo port("data", "input");
+        auto result = matcher.matchPort(port);
+
+        // Should fall through to default (port name)
+        CHECK(result.signal_name == "data");
+        // Should have emitted a warning about invalid regex
+        CHECK(diag.warningCount() == 1);
+    }
+
+    SECTION("invalid instance pattern emits warning") {
+        AutoTemplate tmpl;
+        tmpl.module_name = "submod";
+        tmpl.instance_pattern = "[invalid";  // Invalid regex
+        tmpl.rules.emplace_back("data", "signal_$1");
+
+        TemplateMatcher matcher(&tmpl, &diag);
+        // setInstance should handle invalid regex gracefully
+        bool result = matcher.setInstance("u_sub_0");
+        // Returns true if instance matches as literal (it won't)
+        CHECK_FALSE(result);
+        CHECK(diag.warningCount() == 1);
+    }
+}

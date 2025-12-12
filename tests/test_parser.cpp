@@ -98,20 +98,20 @@ TEST_CASE("AutoParser - parse AUTOINST", "[parser]") {
     }
 }
 
-TEST_CASE("AutoParser - parse AUTOWIRE", "[parser]") {
+TEST_CASE("AutoParser - parse AUTOLOGIC", "[parser]") {
     DiagnosticCollector diag;
     AutoParser parser(&diag);
 
-    SECTION("Simple AUTOWIRE") {
+    SECTION("Simple AUTOLOGIC") {
         parser.parseText(R"(
             module top;
-                /*AUTOWIRE*/
+                /*AUTOLOGIC*/
 
                 submod u_sub (/*AUTOINST*/);
             endmodule
         )");
 
-        CHECK(parser.autowires().size() == 1);
+        CHECK(parser.autologics().size() == 1);
     }
 }
 

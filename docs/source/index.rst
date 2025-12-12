@@ -12,8 +12,7 @@ SystemVerilog compiler frontend.
 Supported AUTO macros:
 
 - ``/*AUTOINST*/`` - Automatic port connections
-- ``/*AUTOWIRE*/`` - Automatic wire declarations
-- ``/*AUTOREG*/`` - Automatic register declarations
+- ``/*AUTOLOGIC*/`` - Automatic logic/wire declarations
 - ``/*AUTOPORTS*/`` - Automatic port declarations
 - ``AUTO_TEMPLATE`` - Template-based port renaming
 
@@ -39,7 +38,7 @@ Developer Guide
    :maxdepth: 2
    :caption: Developer Guide:
 
-   rewriter-architecture
+   analyzer-architecture
    vscode-extension
 
 

@@ -5,7 +5,8 @@
 #include <regex>
 #include <sstream>
 
-#include "slang-autos/Expander.h"  // For PortGrouping enum
+#include "slang-autos/Constants.h"
+#include "slang-autos/SignalAggregator.h"  // For PortGrouping enum
 
 // slang includes
 #include "slang/syntax/SyntaxTree.h"
@@ -150,29 +151,13 @@ struct TriviaCollector : public slang::syntax::SyntaxVisitor<TriviaCollector> {
                 else if (raw_text.find("AUTOINST") != std::string_view::npos) {
                     parser.processBlockComment(raw_text, file_path, line, col, offset, "AUTOINST");
                 }
-                // Check for AUTOWIRE
-                else if (raw_text.find("AUTOWIRE") != std::string_view::npos) {
-                    parser.processBlockComment(raw_text, file_path, line, col, offset, "AUTOWIRE");
-                }
-                // Check for AUTOREG
-                else if (raw_text.find("AUTOREG") != std::string_view::npos) {
-                    parser.processBlockComment(raw_text, file_path, line, col, offset, "AUTOREG");
+                // Check for AUTOLOGIC
+                else if (raw_text.find("AUTOLOGIC") != std::string_view::npos) {
+                    parser.processBlockComment(raw_text, file_path, line, col, offset, "AUTOLOGIC");
                 }
                 // Check for AUTOPORTS
                 else if (raw_text.find("AUTOPORTS") != std::string_view::npos) {
                     parser.processBlockComment(raw_text, file_path, line, col, offset, "AUTOPORTS");
-                }
-                // Check for AUTOINPUT
-                else if (raw_text.find("AUTOINPUT") != std::string_view::npos) {
-                    parser.processBlockComment(raw_text, file_path, line, col, offset, "AUTOINPUT");
-                }
-                // Check for AUTOOUTPUT
-                else if (raw_text.find("AUTOOUTPUT") != std::string_view::npos) {
-                    parser.processBlockComment(raw_text, file_path, line, col, offset, "AUTOOUTPUT");
-                }
-                // Check for AUTOINOUT
-                else if (raw_text.find("AUTOINOUT") != std::string_view::npos) {
-                    parser.processBlockComment(raw_text, file_path, line, col, offset, "AUTOINOUT");
                 }
             }
 
@@ -352,20 +337,14 @@ void AutoParser::processBlockComment(
             autoinsts_.push_back(std::move(*autoinst));
         }
     }
-    else if (comment_type == "AUTOWIRE") {
-        auto autowire = parseAutoWire(raw_text, file_path, line, col, offset);
-        if (autowire) {
-            autowires_.push_back(std::move(*autowire));
-        }
-    }
-    else if (comment_type == "AUTOREG") {
-        AutoReg autoreg;
-        autoreg.file_path = file_path;
-        autoreg.line_number = line;
-        autoreg.column = col;
-        autoreg.source_offset = offset;
-        autoreg.end_offset = offset + raw_text.length();
-        autoregs_.push_back(std::move(autoreg));
+    else if (comment_type == "AUTOLOGIC") {
+        AutoLogic autologic;
+        autologic.file_path = file_path;
+        autologic.line_number = line;
+        autologic.column = col;
+        autologic.source_offset = offset;
+        autologic.end_offset = offset + raw_text.length();
+        autologics_.push_back(std::move(autologic));
     }
     else if (comment_type == "AUTOPORTS") {
         AutoPorts autoports;
@@ -375,33 +354,6 @@ void AutoParser::processBlockComment(
         autoports.source_offset = offset;
         autoports.end_offset = offset + raw_text.length();
         autoports_.push_back(std::move(autoports));
-    }
-    else if (comment_type == "AUTOINPUT") {
-        AutoInput autoinput;
-        autoinput.file_path = file_path;
-        autoinput.line_number = line;
-        autoinput.column = col;
-        autoinput.source_offset = offset;
-        autoinput.end_offset = offset + raw_text.length();
-        autoinputs_.push_back(std::move(autoinput));
-    }
-    else if (comment_type == "AUTOOUTPUT") {
-        AutoOutput autooutput;
-        autooutput.file_path = file_path;
-        autooutput.line_number = line;
-        autooutput.column = col;
-        autooutput.source_offset = offset;
-        autooutput.end_offset = offset + raw_text.length();
-        autooutputs_.push_back(std::move(autooutput));
-    }
-    else if (comment_type == "AUTOINOUT") {
-        AutoInout autoinout;
-        autoinout.file_path = file_path;
-        autoinout.line_number = line;
-        autoinout.column = col;
-        autoinout.source_offset = offset;
-        autoinout.end_offset = offset + raw_text.length();
-        autoinouts_.push_back(std::move(autoinout));
     }
 }
 
@@ -455,30 +407,6 @@ std::optional<AutoInst> AutoParser::parseAutoInst(
     return autoinst;
 }
 
-std::optional<AutoWire> AutoParser::parseAutoWire(
-    std::string_view text,
-    const std::string& file_path,
-    size_t line,
-    size_t column,
-    size_t offset) {
-
-    static const std::regex autowire_re(R"(/\*AUTOWIRE\*/)");
-
-    std::string text_str(text);
-    if (!std::regex_match(text_str, autowire_re)) {
-        return std::nullopt;
-    }
-
-    AutoWire autowire;
-    autowire.file_path = file_path;
-    autowire.line_number = line;
-    autowire.column = column;
-    autowire.source_offset = offset;
-    autowire.end_offset = offset + text.length();
-
-    return autowire;
-}
-
 const AutoTemplate* AutoParser::getTemplateForModule(
     const std::string& module_name,
     size_t before_line) const {
@@ -501,12 +429,8 @@ const AutoTemplate* AutoParser::getTemplateForModule(
 void AutoParser::clear() {
     templates_.clear();
     autoinsts_.clear();
-    autowires_.clear();
-    autoregs_.clear();
+    autologics_.clear();
     autoports_.clear();
-    autoinputs_.clear();
-    autooutputs_.clear();
-    autoinouts_.clear();
 }
 
 void AutoParser::setTemplateParser(std::unique_ptr<ITemplateParser> parser) {

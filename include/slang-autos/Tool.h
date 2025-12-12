@@ -7,7 +7,7 @@
 #include <vector>
 
 #include "Diagnostics.h"
-#include "Expander.h"
+#include "SignalAggregator.h"
 #include "Parser.h"
 #include "Writer.h"
 
@@ -27,7 +27,7 @@ struct ExpansionResult {
     std::string modified_content;   ///< Content after expansion
     std::vector<Replacement> replacements;  ///< All replacements made
     int autoinst_count = 0;         ///< Number of AUTOINSTs expanded
-    int autowire_count = 0;         ///< Number of AUTOWIREs expanded
+    int autologic_count = 0;        ///< Number of AUTOLOGICs expanded
     bool success = true;            ///< false if fatal errors occurred
 
     /// Check if any changes were made

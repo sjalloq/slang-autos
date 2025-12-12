@@ -341,10 +341,10 @@ TEST_CASE("Integration - multiple instances of same module", "[integration]") {
 // =============================================================================
 
 // =============================================================================
-// Multi-Instance Comprehensive Test (AUTOWIRE + AUTOPORTS)
+// Multi-Instance Comprehensive Test (AUTOLOGIC + AUTOPORTS)
 // =============================================================================
 
-TEST_CASE("Multi-instance - signal flow and classification", "[integration][autowire][autoports]") {
+TEST_CASE("Multi-instance - signal flow and classification", "[integration][autologic][autoports]") {
     auto top_sv = getFixturePath("multi_instance/top.sv");
     auto lib_dir = getFixturePath("multi_instance/lib");
 
@@ -365,35 +365,35 @@ TEST_CASE("Multi-instance - signal flow and classification", "[integration][auto
 
     // This fixture tests:
     // - clk, rst_n: consumed by both instances, not driven -> EXTERNAL INPUTS
-    // - data, valid: driven by producer, consumed by consumer -> INTERNAL WIRES
+    // - data, valid: driven by producer, consumed by consumer -> INTERNAL LOGIC
     // - result, result_valid: driven by consumer, not consumed -> EXTERNAL OUTPUTS
     // - Width conflict: producer outputs 16-bit data, consumer inputs 8-bit -> max (16-bit)
     // - User-declared signal: user_declared_wire should be skipped
 
-    // === AUTOWIRE section checks ===
-    auto autowire_start = result.modified_content.find("// Beginning of automatic wires");
-    REQUIRE(autowire_start != std::string::npos);
+    // === AUTOLOGIC section checks ===
+    auto autologic_start = result.modified_content.find("// Beginning of automatic logic");
+    REQUIRE(autologic_start != std::string::npos);
 
-    auto autowire_end = result.modified_content.find("// End of automatics", autowire_start);
-    REQUIRE(autowire_end != std::string::npos);
+    auto autologic_end = result.modified_content.find("// End of automatics", autologic_start);
+    REQUIRE(autologic_end != std::string::npos);
 
-    auto autowire_section = result.modified_content.substr(autowire_start, autowire_end - autowire_start);
+    auto autologic_section = result.modified_content.substr(autologic_start, autologic_end - autologic_start);
 
-    // Internal wires SHOULD be in AUTOWIRE
-    CHECK(autowire_section.find("data") != std::string::npos);
-    CHECK(autowire_section.find("valid") != std::string::npos);
+    // Internal nets SHOULD be in AUTOLOGIC
+    CHECK(autologic_section.find("data") != std::string::npos);
+    CHECK(autologic_section.find("valid") != std::string::npos);
 
     // Width conflict: data should be 16-bit (max of 16 and 8)
-    CHECK(autowire_section.find("[15:0]") != std::string::npos);
+    CHECK(autologic_section.find("[15:0]") != std::string::npos);
 
-    // External signals should NOT be in AUTOWIRE
-    CHECK(autowire_section.find("clk") == std::string::npos);
-    CHECK(autowire_section.find("rst_n") == std::string::npos);
-    CHECK(autowire_section.find("result") == std::string::npos);
-    CHECK(autowire_section.find("result_valid") == std::string::npos);
+    // External signals should NOT be in AUTOLOGIC
+    CHECK(autologic_section.find("clk") == std::string::npos);
+    CHECK(autologic_section.find("rst_n") == std::string::npos);
+    CHECK(autologic_section.find("result") == std::string::npos);
+    CHECK(autologic_section.find("result_valid") == std::string::npos);
 
-    // User-declared signal should NOT be in AUTOWIRE
-    CHECK(autowire_section.find("user_declared_wire") == std::string::npos);
+    // User-declared signal should NOT be in AUTOLOGIC
+    CHECK(autologic_section.find("user_declared_wire") == std::string::npos);
 
     // === AUTOPORTS section checks ===
     auto autoports_start = result.modified_content.find("/*AUTOPORTS*/");
@@ -839,28 +839,28 @@ TEST_CASE("Mixed internal/external - correct signal classification", "[integrati
     // - clk, rst_n: consumed by both producer and consumer inputs, not driven
     //   -> EXTERNAL INPUTS (AUTOPORTS)
     // - data_out, data_valid: driven by producer output, consumed by consumer input
-    //   -> INTERNAL WIRES (AUTOWIRE)
+    //   -> INTERNAL LOGIC (AUTOLOGIC)
     // - result, result_valid: driven by consumer output, not consumed
     //   -> EXTERNAL OUTPUTS (AUTOPORTS)
 
-    // Find AUTOWIRE section
-    auto auto_wires_start = result.modified_content.find("// Beginning of automatic wires");
-    REQUIRE(auto_wires_start != std::string::npos);
+    // Find AUTOLOGIC section
+    auto autologic_start = result.modified_content.find("// Beginning of automatic logic");
+    REQUIRE(autologic_start != std::string::npos);
 
-    auto auto_wires_end = result.modified_content.find("// End of automatics", auto_wires_start);
-    REQUIRE(auto_wires_end != std::string::npos);
+    auto autologic_end = result.modified_content.find("// End of automatics", autologic_start);
+    REQUIRE(autologic_end != std::string::npos);
 
-    auto autowire_section = result.modified_content.substr(auto_wires_start, auto_wires_end - auto_wires_start);
+    auto autologic_section = result.modified_content.substr(autologic_start, autologic_end - autologic_start);
 
-    // Internal signals SHOULD be in AUTOWIRE
-    CHECK(autowire_section.find("data_out") != std::string::npos);
-    CHECK(autowire_section.find("data_valid") != std::string::npos);
+    // Internal signals SHOULD be in AUTOLOGIC
+    CHECK(autologic_section.find("data_out") != std::string::npos);
+    CHECK(autologic_section.find("data_valid") != std::string::npos);
 
-    // External signals should NOT be in AUTOWIRE
-    CHECK(autowire_section.find("clk") == std::string::npos);
-    CHECK(autowire_section.find("rst_n") == std::string::npos);
-    CHECK(autowire_section.find("result") == std::string::npos);
-    CHECK(autowire_section.find("result_valid") == std::string::npos);
+    // External signals should NOT be in AUTOLOGIC
+    CHECK(autologic_section.find("clk") == std::string::npos);
+    CHECK(autologic_section.find("rst_n") == std::string::npos);
+    CHECK(autologic_section.find("result") == std::string::npos);
+    CHECK(autologic_section.find("result_valid") == std::string::npos);
 
     // Find the AUTOPORTS section (between /*AUTOPORTS*/ and );)
     auto autoports_start = result.modified_content.find("/*AUTOPORTS*/");
@@ -880,4 +880,363 @@ TEST_CASE("Mixed internal/external - correct signal classification", "[integrati
     // Internal signals should NOT be in AUTOPORTS
     CHECK(ports_section.find("data_out") == std::string::npos);
     CHECK(ports_section.find("data_valid") == std::string::npos);
+}
+
+// =============================================================================
+// Adversarial / Edge Case Tests
+// =============================================================================
+
+TEST_CASE("Adversarial - AUTOINST in string literal is not expanded", "[adversarial]") {
+    auto top_sv = getFixturePath("adversarial/autoinst_in_string.sv");
+    auto lib_dir = getFixturePath("adversarial/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    REQUIRE(result.success);
+    CHECK(result.hasChanges());
+    CHECK(result.autoinst_count == 1);  // Only the real AUTOINST, not the one in string
+
+    // The string literal should remain unchanged
+    CHECK(result.modified_content.find("\"Use /*AUTOINST*/ to auto-connect ports\"") != std::string::npos);
+
+    // The real AUTOINST should be expanded (port connections with parens)
+    CHECK(result.modified_content.find(".clk") != std::string::npos);
+    CHECK(result.modified_content.find("(clk)") != std::string::npos);
+    CHECK(result.modified_content.find(".data_in") != std::string::npos);
+    CHECK(result.modified_content.find("(data_in)") != std::string::npos);
+}
+
+TEST_CASE("Adversarial - wide buses are handled correctly", "[adversarial]") {
+    auto top_sv = getFixturePath("adversarial/wide_bus_top.sv");
+    auto lib_dir = getFixturePath("adversarial/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    REQUIRE(result.success);
+
+    // Check that AUTOINST was actually expanded (port connections with parens)
+    // The format is ".port_name (signal)" - just check key parts exist
+    CHECK(result.modified_content.find(".wide_data_in") != std::string::npos);
+    CHECK(result.modified_content.find("(wide_data_in)") != std::string::npos);
+    CHECK(result.modified_content.find(".very_wide_data_out") != std::string::npos);
+    CHECK(result.modified_content.find("(very_wide_data_out)") != std::string::npos);
+
+    // Verify the expansion happened (original has just /*AUTOINST*/)
+    CHECK(result.autoinst_count == 1);
+    CHECK(result.hasChanges());
+}
+
+TEST_CASE("Adversarial - special instance names", "[adversarial]") {
+    auto top_sv = getFixturePath("adversarial/special_names.sv");
+    auto lib_dir = getFixturePath("adversarial/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    REQUIRE(result.success);
+    CHECK(result.hasChanges());
+    CHECK(result.autoinst_count == 4);  // 4 instances
+
+    // All instances should be expanded with port connections
+    CHECK(result.modified_content.find("u_sub_0") != std::string::npos);
+    CHECK(result.modified_content.find("u_sub_123") != std::string::npos);
+    CHECK(result.modified_content.find("u__double__underscore") != std::string::npos);
+    CHECK(result.modified_content.find("u_this_is_a_very_long_instance_name") != std::string::npos);
+
+    // Each should have expanded ports - count .clk( occurrences (4 instances)
+    size_t clk_count = 0;
+    size_t pos = 0;
+    while ((pos = result.modified_content.find(".clk", pos)) != std::string::npos) {
+        ++clk_count;
+        ++pos;
+    }
+    CHECK(clk_count == 4);
+}
+
+TEST_CASE("Adversarial - input-only and output-only modules", "[adversarial]") {
+    auto top_sv = getFixturePath("adversarial/unidirectional.sv");
+    auto lib_dir = getFixturePath("adversarial/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    REQUIRE(result.success);
+    CHECK(result.hasChanges());
+    CHECK(result.autoinst_count == 2);  // 2 instances
+
+    // Input-only module (sink) should have its inputs connected
+    CHECK(result.modified_content.find("u_sink") != std::string::npos);
+    CHECK(result.modified_content.find(".data_in") != std::string::npos);
+
+    // Output-only module (source) should have its outputs connected
+    CHECK(result.modified_content.find("u_source") != std::string::npos);
+    CHECK(result.modified_content.find(".data_out") != std::string::npos);
+    CHECK(result.modified_content.find(".valid") != std::string::npos);
+}
+
+TEST_CASE("Adversarial - multiple AUTOINST in same module", "[adversarial]") {
+    auto top_sv = getFixturePath("adversarial/multiple_autoinst.sv");
+    auto lib_dir = getFixturePath("adversarial/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    REQUIRE(result.success);
+    CHECK(result.hasChanges());
+    CHECK(result.autoinst_count == 2);  // 2 AUTOINST macros
+
+    // Both instances should be present with expanded ports
+    CHECK(result.modified_content.find("u_first") != std::string::npos);
+    CHECK(result.modified_content.find("u_second") != std::string::npos);
+
+    // Both should have expanded ports - count .clk occurrences (should be 2)
+    size_t clk_count = 0;
+    size_t pos = 0;
+    while ((pos = result.modified_content.find(".clk", pos)) != std::string::npos) {
+        ++clk_count;
+        ++pos;
+    }
+    CHECK(clk_count == 2);
+
+    // Check port connections exist (with parens)
+    CHECK(result.modified_content.find("(clk)") != std::string::npos);
+    CHECK(result.modified_content.find("(rst_n)") != std::string::npos);
+}
+
+// =============================================================================
+// Additional Idempotency Tests
+// =============================================================================
+
+TEST_CASE("Idempotency - already expanded file has no changes", "[idempotency]") {
+    // This file has already been expanded - running again should produce no changes
+    auto top_sv = getFixturePath("adversarial/already_expanded.sv");
+    auto lib_dir = getFixturePath("adversarial/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    // Read original content
+    std::string original = readFile(top_sv);
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    REQUIRE(result.success);
+
+    // Should have no changes - file is already expanded
+    CHECK_FALSE(result.hasChanges());
+    CHECK(result.autoinst_count == 0);  // No new expansions
+    CHECK(result.modified_content == original);
+}
+
+TEST_CASE("Idempotency - AUTOLOGIC expansion is stable", "[idempotency][autologic]") {
+    auto top_sv = getFixturePath("autologic/top.sv");
+    auto lib_dir = getFixturePath("autologic/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool1;
+    bool loaded1 = tool1.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+    REQUIRE(loaded1);
+
+    // First expansion
+    auto result1 = tool1.expandFile(top_sv, /*dry_run=*/true);
+    REQUIRE(result1.success);
+
+    // Write result to temp file
+    auto temp_dir = fs::temp_directory_path() / "slang_autos_autologic_idempotent";
+    fs::create_directories(temp_dir);
+    auto temp_sv = temp_dir / "top.sv";
+    {
+        std::ofstream ofs(temp_sv);
+        ofs << result1.modified_content;
+    }
+
+    // Copy lib files
+    if (fs::exists(temp_dir / "lib")) {
+        fs::remove_all(temp_dir / "lib");
+    }
+    fs::copy(lib_dir, temp_dir / "lib", fs::copy_options::recursive);
+
+    // Second expansion on the result
+    AutosTool tool2;
+    bool loaded2 = tool2.loadWithArgs({
+        temp_sv.string(),
+        "-y", (temp_dir / "lib").string(),
+        "+libext+.sv"
+    });
+    REQUIRE(loaded2);
+
+    auto result2 = tool2.expandFile(temp_sv, /*dry_run=*/true);
+    REQUIRE(result2.success);
+
+    // Results should be identical (idempotent)
+    CHECK(result1.modified_content == result2.modified_content);
+
+    // Cleanup
+    fs::remove_all(temp_dir);
+}
+
+TEST_CASE("Idempotency - templates with @ substitution", "[idempotency][templates]") {
+    auto top_sv = getFixturePath("templates/top.sv");
+    auto lib_dir = getFixturePath("templates/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool1;
+    bool loaded1 = tool1.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+    REQUIRE(loaded1);
+
+    // First expansion
+    auto result1 = tool1.expandFile(top_sv, /*dry_run=*/true);
+    REQUIRE(result1.success);
+
+    // Write result to temp file
+    auto temp_dir = fs::temp_directory_path() / "slang_autos_template_idempotent";
+    fs::create_directories(temp_dir);
+    auto temp_sv = temp_dir / "top.sv";
+    {
+        std::ofstream ofs(temp_sv);
+        ofs << result1.modified_content;
+    }
+
+    // Copy lib files
+    if (fs::exists(temp_dir / "lib")) {
+        fs::remove_all(temp_dir / "lib");
+    }
+    fs::copy(lib_dir, temp_dir / "lib", fs::copy_options::recursive);
+
+    // Second expansion on the result
+    AutosTool tool2;
+    bool loaded2 = tool2.loadWithArgs({
+        temp_sv.string(),
+        "-y", (temp_dir / "lib").string(),
+        "+libext+.sv"
+    });
+    REQUIRE(loaded2);
+
+    auto result2 = tool2.expandFile(temp_sv, /*dry_run=*/true);
+    REQUIRE(result2.success);
+
+    // Results should be identical (idempotent)
+    CHECK(result1.modified_content == result2.modified_content);
+
+    // Cleanup
+    fs::remove_all(temp_dir);
+}
+
+TEST_CASE("Idempotency - adversarial inputs remain stable", "[idempotency][adversarial]") {
+    auto top_sv = getFixturePath("adversarial/special_names.sv");
+    auto lib_dir = getFixturePath("adversarial/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool1;
+    bool loaded1 = tool1.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+    REQUIRE(loaded1);
+
+    // First expansion
+    auto result1 = tool1.expandFile(top_sv, /*dry_run=*/true);
+    REQUIRE(result1.success);
+
+    // Write result to temp file
+    auto temp_dir = fs::temp_directory_path() / "slang_autos_adversarial_idempotent";
+    fs::create_directories(temp_dir);
+    auto temp_sv = temp_dir / "special_names.sv";
+    {
+        std::ofstream ofs(temp_sv);
+        ofs << result1.modified_content;
+    }
+
+    // Copy lib files
+    if (fs::exists(temp_dir / "lib")) {
+        fs::remove_all(temp_dir / "lib");
+    }
+    fs::copy(lib_dir, temp_dir / "lib", fs::copy_options::recursive);
+
+    // Second expansion on the result
+    AutosTool tool2;
+    bool loaded2 = tool2.loadWithArgs({
+        temp_sv.string(),
+        "-y", (temp_dir / "lib").string(),
+        "+libext+.sv"
+    });
+    REQUIRE(loaded2);
+
+    auto result2 = tool2.expandFile(temp_sv, /*dry_run=*/true);
+    REQUIRE(result2.success);
+
+    // Results should be identical (idempotent)
+    CHECK(result1.modified_content == result2.modified_content);
+
+    // Cleanup
+    fs::remove_all(temp_dir);
 }

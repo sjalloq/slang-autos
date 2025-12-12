@@ -58,9 +58,44 @@ bool TemplateMatcher::setInstance(const std::string& instance_name) {
             inst_captures_.clear();
             return true;
         }
-    } catch (const std::regex_error&) {
-        // Invalid regex - treat as literal match
+    } catch (const std::regex_error& e) {
+        // Invalid regex - warn and treat as literal match
+        if (diagnostics_) {
+            diagnostics_->addWarning(
+                "Invalid regex in instance pattern '" + template_->instance_pattern +
+                "': " + e.what() + ". Treating as literal match.",
+                "", 0, "template_regex");
+        }
         return instance_name == template_->instance_pattern;
+    }
+}
+
+const std::regex* TemplateMatcher::getOrCompileRegex(const std::string& pattern) {
+    // Check if already cached
+    auto it = regex_cache_.find(pattern);
+    if (it != regex_cache_.end()) {
+        return &it->second;
+    }
+
+    // Check if we already know it's invalid
+    if (invalid_patterns_.find(pattern) != invalid_patterns_.end()) {
+        return nullptr;
+    }
+
+    // Try to compile the regex
+    try {
+        auto [inserted_it, success] = regex_cache_.emplace(pattern, std::regex(pattern));
+        return &inserted_it->second;
+    } catch (const std::regex_error& e) {
+        // Mark as invalid, warn, and return nullptr
+        invalid_patterns_.insert(pattern);
+        if (diagnostics_) {
+            diagnostics_->addWarning(
+                "Invalid regex in port pattern '" + pattern + "': " + e.what() +
+                ". Pattern will be skipped.",
+                "", 0, "template_regex");
+        }
+        return nullptr;
     }
 }
 
@@ -72,11 +107,13 @@ MatchResult TemplateMatcher::matchPort(const PortInfo& port) {
 
     // Try each rule in order (first match wins)
     for (const auto& rule : template_->rules) {
-        try {
-            std::regex pattern(rule.port_pattern);
+        // Get cached regex (or compile and cache it)
+        const std::regex* pattern = getOrCompileRegex(rule.port_pattern);
+
+        if (pattern) {
             std::smatch match;
 
-            if (std::regex_match(port.name, match, pattern)) {
+            if (std::regex_match(port.name, match, *pattern)) {
                 // Extract port captures
                 std::vector<std::string> port_captures;
                 for (size_t i = 1; i < match.size(); ++i) {
@@ -102,7 +139,7 @@ MatchResult TemplateMatcher::matchPort(const PortInfo& port) {
 
                 return MatchResult(signal_name, &rule);
             }
-        } catch (const std::regex_error&) {
+        } else {
             // Invalid regex - try literal match
             if (rule.port_pattern == port.name) {
                 std::string signal_name = substitute(rule.signal_expr, port, {});

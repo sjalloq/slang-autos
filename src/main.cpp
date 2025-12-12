@@ -6,6 +6,8 @@
 #include "slang/driver/Driver.h"
 #include "slang/ast/Compilation.h"
 #include "slang/diagnostics/AllDiags.h"
+#include "slang/diagnostics/Diagnostics.h"
+#include "slang/diagnostics/DiagnosticEngine.h"
 #include "slang/util/VersionInfo.h"
 
 #include "slang-autos/Tool.h"
@@ -219,18 +221,12 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // Report any inline config diagnostics
+    // Report any inline config diagnostics (always shown - these are config issues)
     for (const auto& diag : prescan_diagnostics.diagnostics()) {
-        if (diag.level == DiagnosticLevel::Warning) {
-            std::cerr << "warning: ";
-        } else {
-            std::cerr << "error: ";
-        }
-        std::cerr << diag.message;
-        if (!diag.file_path.empty()) {
-            std::cerr << " [" << diag.file_path << "]";
-        }
-        std::cerr << "\n";
+        OS::printE(fmt::format("{}: {}{}\n",
+            diag.level == DiagnosticLevel::Warning ? "warning" : "error",
+            diag.message,
+            diag.file_path.empty() ? "" : " [" + diag.file_path + "]"));
     }
 
     // ========================================================================
@@ -248,7 +244,7 @@ int main(int argc, char* argv[]) {
     bool diff_mode = diffMode.value_or(false);
 
     int total_autoinst = 0;
-    int total_autowire = 0;
+    int total_autologic = 0;
     int files_changed = 0;
     bool any_errors = false;
 
@@ -264,23 +260,48 @@ int main(int argc, char* argv[]) {
         // Create compilation with this top module (reuses parsed syntax trees)
         auto compilation = driver.createCompilation();
 
-        // Check for InvalidTopModule error (module name doesn't match filename)
+        // Process slang diagnostics
         {
             auto& diags = compilation->getAllDiagnostics();
+            bool hasSlangErrors = false;
             bool hasInvalidTop = false;
+
             for (const auto& d : diags) {
                 if (d.code == slang::diag::InvalidTopModule) {
                     hasInvalidTop = true;
-                    break;
+                }
+                // Check if this is an error-level diagnostic
+                auto severity = slang::getDefaultSeverity(d.code);
+                if (severity == slang::DiagnosticSeverity::Error ||
+                    severity == slang::DiagnosticSeverity::Fatal) {
+                    hasSlangErrors = true;
                 }
             }
+
+            // In verbose mode, show all slang diagnostics
+            if (verbosity >= 2 && !diags.empty()) {
+                OS::printE(slang::DiagnosticEngine::reportAll(
+                    driver.sourceManager, diags));
+            }
+            // Otherwise, only show if there are errors
+            else if (hasSlangErrors && !diags.empty()) {
+                OS::printE(slang::DiagnosticEngine::reportAll(
+                    driver.sourceManager, diags));
+            }
+
+            // Special handling for InvalidTopModule
             if (hasInvalidTop) {
                 any_errors = true;
                 OS::printE(fmt::format(
-                    "error: {}: Module name does not match filename.\n"
-                    "       Expected module '{}' but it was not found.\n"
-                    "       slang-autos requires the module name to match the filename.\n",
-                    path.string(), path.stem().string()));
+                    "note: slang-autos requires the module name to match the filename.\n"
+                    "      Expected module '{}' in file '{}'.\n",
+                    path.stem().string(), path.string()));
+                continue;
+            }
+
+            // Skip this file if slang found errors (but not just warnings)
+            if (hasSlangErrors) {
+                any_errors = true;
                 continue;
             }
         }
@@ -299,16 +320,15 @@ int main(int argc, char* argv[]) {
 
         if (!result.success) {
             any_errors = true;
-            // Print diagnostics for this file
-            if (tool.diagnostics().hasErrors() ||
-                (verbosity >= 1 && tool.diagnostics().warningCount() > 0)) {
+            // Print diagnostics for this file (always show - these are config/tool issues)
+            if (tool.diagnostics().hasErrors() || tool.diagnostics().warningCount() > 0) {
                 OS::printE(tool.diagnostics().format());
             }
             continue;
         }
 
         total_autoinst += result.autoinst_count;
-        total_autowire += result.autowire_count;
+        total_autologic += result.autologic_count;
 
         if (result.hasChanges()) {
             ++files_changed;
@@ -318,26 +338,26 @@ int main(int argc, char* argv[]) {
                 OS::print(writer.generateDiff(path, result.original_content,
                                               result.modified_content));
             } else if (verbosity >= 1) {
-                OS::print(fmt::format("{}: {} AUTOINST, {} AUTOWIRE\n",
+                OS::print(fmt::format("{}: {} AUTOINST, {} AUTOLOGIC\n",
                                       path.string(), result.autoinst_count,
-                                      result.autowire_count));
+                                      result.autologic_count));
             }
         }
 
-        // Print diagnostics for this file (errors always, warnings on verbose)
+        // Print diagnostics for this file (always show - these are config/tool issues)
         if (tool.diagnostics().hasErrors()) {
             any_errors = true;
             OS::printE(tool.diagnostics().format());
-        } else if (verbosity >= 1 && tool.diagnostics().warningCount() > 0) {
+        } else if (tool.diagnostics().warningCount() > 0) {
             OS::printE(tool.diagnostics().format());
         }
     }
 
     // Print summary
     if (verbosity >= 1 && !diff_mode) {
-        OS::print(fmt::format("\nSummary: {} file(s) {}changed, {} AUTOINST, {} AUTOWIRE\n",
+        OS::print(fmt::format("\nSummary: {} file(s) {}changed, {} AUTOINST, {} AUTOLOGIC\n",
                               files_changed, dry_run ? "would be " : "",
-                              total_autoinst, total_autowire));
+                              total_autoinst, total_autologic));
     }
 
     return any_errors ? 1 : 0;

@@ -80,13 +80,14 @@ endif()
 # ============================================================================
 
 add_library(slang-autos-lib
+    src/CompilationUtils.cpp
     src/Diagnostics.cpp
     src/Parser.cpp
     src/TemplateMatcher.cpp
-    src/Expander.cpp
+    src/SignalAggregator.cpp
     src/Writer.cpp
     src/Tool.cpp
-    src/AutosRewriter.cpp
+    src/AutosAnalyzer.cpp
     src/Config.cpp
 )
 

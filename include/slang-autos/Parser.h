@@ -83,28 +83,16 @@ struct AutoInst {
     AutoInst() = default;
 };
 
-/// Represents an AUTOWIRE comment location.
-/// Marks where automatic wire declarations should be generated.
-struct AutoWire {
-    std::string file_path;
-    size_t line_number = 0;
-    size_t column = 0;
-    size_t source_offset = 0;       ///< Byte offset where /*AUTOWIRE*/ starts
-    size_t end_offset = 0;          ///< Byte offset where /*AUTOWIRE*/ ends
-
-    AutoWire() = default;
-};
-
-/// Represents an AUTOREG comment location.
-/// Marks where automatic reg declarations should be generated.
-struct AutoReg {
+/// Represents an AUTOLOGIC comment location.
+/// Marks where automatic logic declarations should be generated for internal nets.
+struct AutoLogic {
     std::string file_path;
     size_t line_number = 0;
     size_t column = 0;
     size_t source_offset = 0;
     size_t end_offset = 0;
 
-    AutoReg() = default;
+    AutoLogic() = default;
 };
 
 /// Represents an AUTOPORTS comment location (ANSI-style port list).
@@ -117,42 +105,6 @@ struct AutoPorts {
     size_t end_offset = 0;
 
     AutoPorts() = default;
-};
-
-/// Represents an AUTOINPUT comment location.
-/// Marks where automatic input declarations should be generated.
-struct AutoInput {
-    std::string file_path;
-    size_t line_number = 0;
-    size_t column = 0;
-    size_t source_offset = 0;
-    size_t end_offset = 0;
-
-    AutoInput() = default;
-};
-
-/// Represents an AUTOOUTPUT comment location.
-/// Marks where automatic output declarations should be generated.
-struct AutoOutput {
-    std::string file_path;
-    size_t line_number = 0;
-    size_t column = 0;
-    size_t source_offset = 0;
-    size_t end_offset = 0;
-
-    AutoOutput() = default;
-};
-
-/// Represents an AUTOINOUT comment location.
-/// Marks where automatic inout declarations should be generated.
-struct AutoInout {
-    std::string file_path;
-    size_t line_number = 0;
-    size_t column = 0;
-    size_t source_offset = 0;
-    size_t end_offset = 0;
-
-    AutoInout() = default;
 };
 
 /// Abstract interface for template parsers.
@@ -194,7 +146,7 @@ private:
 
 /// Parser for AUTO comments in SystemVerilog source files.
 /// Uses slang's trivia API to find block comments and parses
-/// AUTO_TEMPLATE, AUTOINST, AUTOWIRE, AUTOREG, AUTOPORTS, etc.
+/// AUTO_TEMPLATE, AUTOINST, AUTOLOGIC, AUTOPORTS, etc.
 class AutoParser {
 public:
     explicit AutoParser(DiagnosticCollector* diagnostics = nullptr);
@@ -211,23 +163,11 @@ public:
     /// Get all parsed AUTOINST comments
     [[nodiscard]] const std::vector<AutoInst>& autoinsts() const { return autoinsts_; }
 
-    /// Get all parsed AUTOWIRE comments
-    [[nodiscard]] const std::vector<AutoWire>& autowires() const { return autowires_; }
-
-    /// Get all parsed AUTOREG comments
-    [[nodiscard]] const std::vector<AutoReg>& autoregs() const { return autoregs_; }
+    /// Get all parsed AUTOLOGIC comments
+    [[nodiscard]] const std::vector<AutoLogic>& autologics() const { return autologics_; }
 
     /// Get all parsed AUTOPORTS comments
     [[nodiscard]] const std::vector<AutoPorts>& autoports() const { return autoports_; }
-
-    /// Get all parsed AUTOINPUT comments
-    [[nodiscard]] const std::vector<AutoInput>& autoinputs() const { return autoinputs_; }
-
-    /// Get all parsed AUTOOUTPUT comments
-    [[nodiscard]] const std::vector<AutoOutput>& autooutputs() const { return autooutputs_; }
-
-    /// Get all parsed AUTOINOUT comments
-    [[nodiscard]] const std::vector<AutoInout>& autoinouts() const { return autoinouts_; }
 
     /// Find the nearest template for a module, searching backward from a line.
     /// @param module_name Module type to find template for
@@ -262,14 +202,6 @@ private:
         size_t column,
         size_t offset);
 
-    /// Parse AUTOWIRE from comment text
-    std::optional<AutoWire> parseAutoWire(
-        std::string_view text,
-        const std::string& file_path,
-        size_t line,
-        size_t column,
-        size_t offset);
-
     /// Process the syntax tree looking for AUTO comments in trivia
     void processTree(const std::string& source_text, const std::string& file_path);
 
@@ -277,12 +209,8 @@ private:
     DiagnosticCollector* diagnostics_;
     std::vector<AutoTemplate> templates_;
     std::vector<AutoInst> autoinsts_;
-    std::vector<AutoWire> autowires_;
-    std::vector<AutoReg> autoregs_;
+    std::vector<AutoLogic> autologics_;
     std::vector<AutoPorts> autoports_;
-    std::vector<AutoInput> autoinputs_;
-    std::vector<AutoOutput> autooutputs_;
-    std::vector<AutoInout> autoinouts_;
 };
 
 // ============================================================================

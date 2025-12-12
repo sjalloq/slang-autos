@@ -21,33 +21,6 @@ AutosToolOptions MergedConfig::toToolOptions() const {
     return opts;
 }
 
-std::vector<std::string> MergedConfig::getSlangArgs() const {
-    std::vector<std::string> args;
-
-    // Add --single-unit if enabled (default: true)
-    if (single_unit) {
-        args.push_back("--single-unit");
-    }
-
-    // Add library directories (-y)
-    for (const auto& dir : libdirs) {
-        args.push_back("-y");
-        args.push_back(dir);
-    }
-
-    // Add library extensions (+libext+)
-    for (const auto& ext : libext) {
-        args.push_back("+libext+" + ext);
-    }
-
-    // Add include directories (+incdir+)
-    for (const auto& dir : incdirs) {
-        args.push_back("+incdir+" + dir);
-    }
-
-    return args;
-}
-
 // ============================================================================
 // ConfigLoader implementation
 // ============================================================================

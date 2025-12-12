@@ -1,42 +1,16 @@
 #pragma once
 
-#include <optional>
+#include <regex>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
+#include "CompilationUtils.h"  // For PortInfo
 #include "Diagnostics.h"
 #include "Parser.h"
 
 namespace slang_autos {
-
-/// Port information extracted from module definitions.
-/// Contains both resolved values (for connection) and original syntax (for declarations).
-struct PortInfo {
-    std::string name;               ///< Port name
-    std::string direction;          ///< "input", "output", "inout"
-    std::string type_str = "logic"; ///< Type: "wire", "logic", "reg", etc.
-    int width = 1;                  ///< Resolved bit width
-    std::string range_str;          ///< Resolved range: "[7:0]"
-    std::string original_range_str; ///< Original syntax: "[WIDTH-1:0]"
-    std::optional<int> msb;         ///< Most significant bit (if range)
-    std::optional<int> lsb;         ///< Least significant bit (if range)
-    bool is_signed = false;
-    bool is_array = false;
-    std::string array_dims;         ///< Array dimensions if any
-
-    PortInfo() = default;
-    PortInfo(std::string n, std::string dir, int w = 1)
-        : name(std::move(n)), direction(std::move(dir)), width(w) {}
-
-    /// Get the range string, optionally preferring original syntax
-    [[nodiscard]] std::string getRangeStr(bool prefer_original = true) const {
-        if (prefer_original && !original_range_str.empty()) {
-            return original_range_str;
-        }
-        return range_str;
-    }
-};
 
 /// Result of matching a port against template rules.
 struct MatchResult {
@@ -106,11 +80,23 @@ private:
     /// @return Expression with math functions evaluated
     std::string evaluateMathFunctions(const std::string& expr);
 
+    /// Get or compile a regex pattern, caching for reuse.
+    /// @param pattern The regex pattern string
+    /// @return Pointer to cached regex, or nullptr if pattern is invalid
+    const std::regex* getOrCompileRegex(const std::string& pattern);
+
     const AutoTemplate* template_;
     DiagnosticCollector* diagnostics_;
     std::string inst_name_;
     std::vector<std::string> inst_captures_;
     std::set<std::string> warned_unresolved_;  // Avoid duplicate warnings
+
+    /// Cache of compiled regex patterns (keyed by pattern string)
+    /// This avoids recompiling the same pattern for each port match.
+    std::unordered_map<std::string, std::regex> regex_cache_;
+
+    /// Set of patterns that failed to compile (to avoid repeated error reports)
+    std::set<std::string> invalid_patterns_;
 };
 
 } // namespace slang_autos

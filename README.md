@@ -61,7 +61,7 @@ slang-autos design.sv --strict
 
 The templating system uses standard regex syntax instead of Emacs Lisp's double-escaped patterns.  This hopefully makes it easier writing rename rules. 
 
-For better or worse, the `AUTO_TEMPLATE`, `AUTOWIRE` and `AUTOREG` names are taken from `verilog-mode` along with the addition of `AUTOPORTS` for ANSI-style port declarations.  The format should be familiar to anyone who has used `verilog-mode` in the past.  The main difference is that each rename rule is specified using the `=>` operator.  The left hands side defines the source port name and the right hand side is the regex expansion.
+The `AUTO_TEMPLATE` and `AUTOINST` names are taken from `verilog-mode`, with `AUTOLOGIC` replacing the separate `AUTOWIRE`/`AUTOREG` macros, and `AUTOPORTS` added for ANSI-style port declarations. The format should be familiar to anyone who has used `verilog-mode` in the past. The main difference is that each rename rule is specified using the `=>` operator. The left hand side defines the source port name and the right hand side is the regex expansion.
 
 The following snippet gives an example of the template syntax:
 

@@ -3,7 +3,6 @@ add_executable(slang-autos-tests
     test_main.cpp
     test_parser.cpp
     test_template_matcher.cpp
-    test_expander.cpp
     test_writer.cpp
     test_tool.cpp
     test_integration.cpp

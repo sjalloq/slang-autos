@@ -66,10 +66,6 @@ struct MergedConfig {
 
     /// Convert to AutosToolOptions (for use with AutosTool)
     [[nodiscard]] struct AutosToolOptions toToolOptions() const;
-
-    /// Generate slang driver arguments for library paths.
-    /// Returns arguments like: -y ./lib +libext+.v +incdir+./include
-    [[nodiscard]] std::vector<std::string> getSlangArgs() const;
 };
 
 /// Loads and merges configuration from multiple sources.

@@ -304,40 +304,6 @@ TEST_CASE("MergedConfig::toToolOptions - converts correctly", "[config]") {
     CHECK(opts.verbosity == 2);
 }
 
-TEST_CASE("MergedConfig::getSlangArgs - generates correct arguments", "[config]") {
-    MergedConfig merged;
-    merged.libdirs = {"./lib1", "./lib2"};
-    merged.libext = {".v", ".sv"};
-    merged.incdirs = {"./include"};
-
-    auto args = merged.getSlangArgs();
-
-    // Expected: --single-unit -y ./lib1 -y ./lib2 +libext+.v +libext+.sv +incdir+./include
-    // (single_unit defaults to true)
-    REQUIRE(args.size() == 8);
-    CHECK(args[0] == "--single-unit");
-    CHECK(args[1] == "-y");
-    CHECK(args[2] == "./lib1");
-    CHECK(args[3] == "-y");
-    CHECK(args[4] == "./lib2");
-    CHECK(args[5] == "+libext+.v");
-    CHECK(args[6] == "+libext+.sv");
-    CHECK(args[7] == "+incdir+./include");
-}
-
-TEST_CASE("MergedConfig::getSlangArgs - single_unit disabled", "[config]") {
-    MergedConfig merged;
-    merged.single_unit = false;
-    merged.libdirs = {"./lib"};
-
-    auto args = merged.getSlangArgs();
-
-    // --single-unit should NOT be present
-    REQUIRE(args.size() == 2);
-    CHECK(args[0] == "-y");
-    CHECK(args[1] == "./lib");
-}
-
 // ============================================================================
 // Extended Inline Config Parsing
 // ============================================================================
