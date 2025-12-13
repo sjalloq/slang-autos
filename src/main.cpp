@@ -77,8 +77,10 @@ int main(int argc, char* argv[]) {
     // Output modes
     std::optional<bool> dryRun;
     std::optional<bool> diffMode;
+    std::optional<bool> checkMode;
     driver.cmdLine.add("--dry-run", dryRun, "Show changes without modifying files");
     driver.cmdLine.add("--diff", diffMode, "Output unified diff instead of modifying");
+    driver.cmdLine.add("--check", checkMode, "Check if files need changes (exit 1 if changes needed, for CI)");
 
     // Strictness
     std::optional<bool> strictMode;
@@ -242,6 +244,7 @@ int main(int argc, char* argv[]) {
 
     bool dry_run = dryRun.value_or(false);
     bool diff_mode = diffMode.value_or(false);
+    bool check_mode = checkMode.value_or(false);
 
     int total_autoinst = 0;
     int total_autologic = 0;
@@ -316,7 +319,7 @@ int main(int argc, char* argv[]) {
             tool.setInlineConfig(path, it->second);
         }
 
-        auto result = tool.expandFile(path, dry_run || diff_mode);
+        auto result = tool.expandFile(path, dry_run || diff_mode || check_mode);
 
         if (!result.success) {
             any_errors = true;
@@ -355,9 +358,18 @@ int main(int argc, char* argv[]) {
 
     // Print summary
     if (verbosity >= 1 && !diff_mode) {
+        std::string change_verb = (dry_run || check_mode) ? "would be " : "";
         OS::print(fmt::format("\nSummary: {} file(s) {}changed, {} AUTOINST, {} AUTOLOGIC\n",
-                              files_changed, dry_run ? "would be " : "",
+                              files_changed, change_verb,
                               total_autoinst, total_autologic));
+    }
+
+    // In check mode, exit 1 if any files would be changed (for CI)
+    if (check_mode && files_changed > 0) {
+        if (verbosity >= 1) {
+            OS::printE("error: files need AUTO expansion (run without --check to apply)\n");
+        }
+        return 1;
     }
 
     return any_errors ? 1 : 0;

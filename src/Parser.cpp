@@ -407,25 +407,6 @@ std::optional<AutoInst> AutoParser::parseAutoInst(
     return autoinst;
 }
 
-const AutoTemplate* AutoParser::getTemplateForModule(
-    const std::string& module_name,
-    size_t before_line) const {
-
-    const AutoTemplate* best = nullptr;
-    size_t best_line = 0;
-
-    for (const auto& tmpl : templates_) {
-        if (tmpl.module_name == module_name &&
-            tmpl.line_number < before_line &&
-            tmpl.line_number > best_line) {
-            best = &tmpl;
-            best_line = tmpl.line_number;
-        }
-    }
-
-    return best;
-}
-
 void AutoParser::clear() {
     templates_.clear();
     autoinsts_.clear();

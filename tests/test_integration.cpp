@@ -187,6 +187,162 @@ TEST_CASE("Integration - template with @ substitution", "[integration][templates
     CHECK(result.modified_content.find("data_1_out") != std::string::npos);
 }
 
+TEST_CASE("Integration - multiple templates for same module uses closest preceding", "[integration][templates]") {
+    // This tests verilog-mode semantics: each instance should use the closest
+    // preceding template for that module, not the first one in the file.
+    auto top_sv = getFixturePath("multi_template/top.sv");
+    auto lib_dir = getFixturePath("multi_template/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, true);
+
+    CHECK(result.success);
+    CHECK(result.autoinst_count == 2);
+
+    // First instance (u_sub_a) should use first template (sig_a_ prefix)
+    CHECK(result.modified_content.find("sig_a_clk") != std::string::npos);
+    CHECK(result.modified_content.find("sig_a_data_in") != std::string::npos);
+    CHECK(result.modified_content.find("sig_a_data_out") != std::string::npos);
+
+    // Second instance (u_sub_b) should use second template (sig_b_ prefix)
+    CHECK(result.modified_content.find("sig_b_clk") != std::string::npos);
+    CHECK(result.modified_content.find("sig_b_data_in") != std::string::npos);
+    CHECK(result.modified_content.find("sig_b_data_out") != std::string::npos);
+
+    // Verify the signals are NOT incorrectly mixed (bug would cause both to use sig_a_)
+    // Count occurrences to ensure each prefix appears exactly once per signal
+    auto count = [](const std::string& haystack, const std::string& needle) {
+        size_t count = 0;
+        size_t pos = 0;
+        while ((pos = haystack.find(needle, pos)) != std::string::npos) {
+            ++count;
+            pos += needle.length();
+        }
+        return count;
+    };
+
+    // Each signal name should appear exactly once in the output
+    CHECK(count(result.modified_content, "(sig_a_clk)") == 1);
+    CHECK(count(result.modified_content, "(sig_b_clk)") == 1);
+}
+
+TEST_CASE("Integration - manual port without trailing comma", "[integration]") {
+    // Test that a comma is automatically added between manual ports and auto ports
+    // when the user doesn't include a trailing comma
+    auto top_sv = getFixturePath("manual_ports/top_no_comma.sv");
+    auto lib_dir = getFixturePath("manual_ports/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, true);
+
+    CHECK(result.success);
+    CHECK(result.autoinst_count == 1);
+
+    // Manual port (clk) should not be duplicated
+    auto count = [](const std::string& haystack, const std::string& needle) {
+        size_t count = 0;
+        size_t pos = 0;
+        while ((pos = haystack.find(needle, pos)) != std::string::npos) {
+            ++count;
+            pos += needle.length();
+        }
+        return count;
+    };
+
+    CHECK(count(result.modified_content, ".clk") == 1);  // Only manual, not auto
+
+    // Auto ports should be present
+    CHECK(result.modified_content.find(".rst_n") != std::string::npos);
+    CHECK(result.modified_content.find(".data_in") != std::string::npos);
+    CHECK(result.modified_content.find(".data_out") != std::string::npos);
+
+    // Output should be valid SystemVerilog (comma between .clk and auto ports)
+    // The comma is added after /*AUTOINST*/
+    CHECK(result.modified_content.find("/*AUTOINST*/,") != std::string::npos);
+}
+
+TEST_CASE("Integration - parameterized port widths resolve correctly", "[integration]") {
+    // AUTOLOGIC should use resolved widths, not parameter expressions,
+    // because the parameter may not exist in the parent module's scope
+    auto top_sv = getFixturePath("param_width/top_autologic.sv");
+    auto lib_dir = getFixturePath("param_width/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, true);
+
+    CHECK(result.success);
+    CHECK(result.autologic_count == 1);
+
+    // internal_data should be declared with resolved width [7:0] (from WIDTH=8)
+    // NOT [WIDTH-1:0] which would be invalid in this scope
+    CHECK(result.modified_content.find("logic [7:0] internal_data") != std::string::npos);
+}
+
+TEST_CASE("Integration - shared port declarations (input a, b, c)", "[integration]") {
+    // Test that ports declared together like "input a, b, c" are all expanded correctly
+    auto top_sv = getFixturePath("multiport/top.sv");
+    auto lib_dir = getFixturePath("multiport/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, true);
+
+    CHECK(result.success);
+    CHECK(result.autoinst_count == 1);
+
+    // All 6 ports should be present (clk, rst_n from "input clk, rst_n",
+    // a, b, c from "input [7:0] a, b, c", out from "output [7:0] out")
+    CHECK(result.modified_content.find(".clk") != std::string::npos);
+    CHECK(result.modified_content.find(".rst_n") != std::string::npos);
+    CHECK(result.modified_content.find(".a") != std::string::npos);
+    CHECK(result.modified_content.find(".b") != std::string::npos);
+    CHECK(result.modified_content.find(".c") != std::string::npos);
+    CHECK(result.modified_content.find(".out") != std::string::npos);
+}
+
 // =============================================================================
 // EDA Argument Tests (would have caught +libext+ as file bug)
 // =============================================================================

@@ -164,7 +164,8 @@ private:
     std::optional<std::string>
     extractDeclarationName(const slang::syntax::MemberSyntax& member) const;
 
-    const AutoTemplate* findTemplate(const std::string& module_name) const;
+    const AutoTemplate* findTemplate(const std::string& module_name,
+                                      size_t before_line) const;
 
     std::string generatePortConnections(const AutoInstInfo& inst,
                                         const std::vector<PortInfo>& ports);

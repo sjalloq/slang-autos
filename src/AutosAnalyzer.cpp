@@ -88,12 +88,20 @@ AutosAnalyzer::collectModuleInfo(const ModuleDeclarationSyntax& module) {
             if (auto inst = extractInstanceInfo(*member)) {
                 inst_info.module_type = inst->first;
                 inst_info.instance_name = inst->second;
-                inst_info.templ = findTemplate(inst_info.module_type);
+
+                // Get line number of instance for template lookup
+                // (verilog-mode uses closest preceding template)
+                auto& hier = member->as<HierarchyInstantiationSyntax>();
+                size_t inst_offset = hier.type.location().offset();
+                size_t inst_line = 1;
+                for (size_t i = 0; i < inst_offset && i < source_content_.size(); ++i) {
+                    if (source_content_[i] == '\n') ++inst_line;
+                }
+                inst_info.templ = findTemplate(inst_info.module_type, inst_line);
 
                 // Get positions from AST
                 // HierarchyInstantiationSyntax has: type, parameters, instances, semi
                 // HierarchicalInstanceSyntax has: decl, openParen, connections, closeParen
-                auto& hier = member->as<HierarchyInstantiationSyntax>();
                 if (!hier.instances.empty()) {
                     auto& first_inst = *hier.instances[0];
 
@@ -379,7 +387,39 @@ void AutosAnalyzer::generateAutoInstReplacement(
     const AutoInstInfo& inst,
     const std::vector<PortInfo>& ports) {
 
+    // Count how many ports will be auto-generated (not manually connected)
+    size_t auto_port_count = 0;
+    for (const auto& port : ports) {
+        if (!inst.manual_ports.count(port.name)) {
+            ++auto_port_count;
+        }
+    }
+
     std::string port_text = generatePortConnections(inst, ports);
+
+    // If there are manual ports AND auto ports to generate, check if we need
+    // to add a comma between them. Look backwards from AUTOINST marker for the
+    // last non-whitespace character - if it's not a comma, we need to add one.
+    if (!inst.manual_ports.empty() && auto_port_count > 0) {
+        size_t marker_start = inst.marker_end - markers::AUTOINST.length();
+        bool needs_comma = true;
+
+        // Search backwards for last non-whitespace character
+        for (size_t i = marker_start; i > 0; --i) {
+            char c = source_content_[i - 1];
+            if (c == ',') {
+                needs_comma = false;
+                break;
+            } else if (!std::isspace(static_cast<unsigned char>(c))) {
+                // Found non-whitespace that isn't comma - need to add comma
+                break;
+            }
+        }
+
+        if (needs_comma) {
+            port_text = "," + port_text;
+        }
+    }
 
     // Check if replacement would actually change the content
     if (inst.marker_end < inst.close_paren_pos &&
@@ -694,11 +734,23 @@ AutosAnalyzer::extractDeclarationName(const MemberSyntax& member) const {
     return std::nullopt;
 }
 
-const AutoTemplate* AutosAnalyzer::findTemplate(const std::string& module_name) const {
+const AutoTemplate* AutosAnalyzer::findTemplate(const std::string& module_name,
+                                                size_t before_line) const {
+    // Find the closest preceding template for this module (verilog-mode semantics).
+    // Templates must appear before the instance they apply to.
+    const AutoTemplate* best = nullptr;
+    size_t best_line = 0;
+
     for (const auto& t : templates_) {
-        if (t.module_name == module_name) return &t;
+        if (t.module_name == module_name &&
+            t.line_number < before_line &&
+            t.line_number > best_line) {
+            best = &t;
+            best_line = t.line_number;
+        }
     }
-    return nullptr;
+
+    return best;
 }
 
 } // namespace slang_autos

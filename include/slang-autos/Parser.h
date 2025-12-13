@@ -169,14 +169,6 @@ public:
     /// Get all parsed AUTOPORTS comments
     [[nodiscard]] const std::vector<AutoPorts>& autoports() const { return autoports_; }
 
-    /// Find the nearest template for a module, searching backward from a line.
-    /// @param module_name Module type to find template for
-    /// @param before_line Only consider templates before this line
-    /// @return Pointer to matching template or nullptr
-    [[nodiscard]] const AutoTemplate* getTemplateForModule(
-        const std::string& module_name,
-        size_t before_line) const;
-
     /// Clear all parsed results
     void clear();
 

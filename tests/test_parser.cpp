@@ -115,33 +115,3 @@ TEST_CASE("AutoParser - parse AUTOLOGIC", "[parser]") {
     }
 }
 
-TEST_CASE("AutoParser - getTemplateForModule", "[parser]") {
-    DiagnosticCollector diag;
-    AutoParser parser(&diag);
-
-    parser.parseText(R"(
-        /* submod AUTO_TEMPLATE "u_a"
-           data => sig_a
-        */
-
-        /* submod AUTO_TEMPLATE "u_b"
-           data => sig_b
-        */
-
-        /* other_mod AUTO_TEMPLATE "u_.*"
-           data => other_data
-        */
-    )");
-
-    SECTION("Finds nearest template before line") {
-        // Template at line ~5 should be found for later lines
-        auto* tmpl = parser.getTemplateForModule("submod", 100);
-        REQUIRE(tmpl != nullptr);
-        // Should be the second submod template (closest)
-    }
-
-    SECTION("Returns nullptr when no match") {
-        auto* tmpl = parser.getTemplateForModule("nonexistent", 100);
-        CHECK(tmpl == nullptr);
-    }
-}
