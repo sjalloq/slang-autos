@@ -6,10 +6,183 @@
 #include "slang/ast/symbols/PortSymbols.h"
 #include "slang/ast/types/Type.h"
 #include "slang/ast/types/AllTypes.h"
+#include "slang/ast/types/DeclaredType.h"
+#include "slang/syntax/AllSyntax.h"
+#include "slang/text/SourceManager.h"
 
 namespace slang_autos {
 
 using namespace slang::ast;
+using namespace slang::syntax;
+
+namespace {
+
+/// Recursively extract all packed array dimensions from a type.
+/// For [7:0][3:0], returns "[7:0][3:0]".
+std::string extractPackedDimensions(const Type& type) {
+    std::string result;
+
+    // Walk through nested packed array types
+    const Type* current = &type;
+    while (current->isPackedArray()) {
+        auto& packed = current->getCanonicalType().as<PackedArrayType>();
+        auto range = packed.range;
+        result += "[" + std::to_string(range.left) + ":" + std::to_string(range.right) + "]";
+        current = &packed.elementType;
+    }
+
+    return result;
+}
+
+/// Extract original source text for a syntax node, preserving macro references.
+/// Iterates through all tokens in the node and reconstructs the original text,
+/// replacing expanded macro tokens with their original macro invocations.
+std::string extractOriginalSourceText(const SyntaxNode& node, const slang::SourceManager& sm) {
+    std::string result;
+
+    // Track whether we've seen any macro tokens
+    bool hasMacroTokens = false;
+
+    // First pass: check if any tokens are from macro expansions
+    for (auto it = node.tokens_begin(); it != node.tokens_end(); ++it) {
+        auto token = *it;
+        if (token.valid() && sm.isMacroLoc(token.location())) {
+            hasMacroTokens = true;
+            break;
+        }
+    }
+
+    // If no macro tokens, just use toString() for efficiency
+    if (!hasMacroTokens) {
+        return node.toString();
+    }
+
+    // Second pass: reconstruct text, replacing macro tokens with original source
+    // We need to track our position in the original source to handle mixed macro/non-macro
+    slang::BufferID currentBuffer;
+    size_t lastEndOffset = 0;
+    bool firstToken = true;
+
+    for (auto it = node.tokens_begin(); it != node.tokens_end(); ++it) {
+        auto token = *it;
+        if (!token.valid()) continue;
+
+        auto tokenLoc = token.location();
+
+        if (sm.isMacroLoc(tokenLoc)) {
+            // Token is from macro expansion - get the original invocation location
+            auto expansionRange = sm.getExpansionRange(tokenLoc);
+            auto expansionStart = expansionRange.start();
+            auto expansionEnd = expansionRange.end();
+
+            std::string_view sourceText = sm.getSourceText(expansionStart.buffer());
+            if (sourceText.empty()) {
+                // Fallback: use token's raw text
+                result += token.rawText();
+                continue;
+            }
+
+            size_t macroStart = expansionStart.offset();
+            size_t macroEnd = expansionEnd.offset();
+
+            // Safety check
+            if (macroStart >= sourceText.size() || macroEnd > sourceText.size() || macroStart > macroEnd) {
+                result += token.rawText();
+                continue;
+            }
+
+            // If this is our first token or we're in a new buffer, just extract the macro
+            if (firstToken || currentBuffer != expansionStart.buffer()) {
+                result += sourceText.substr(macroStart, macroEnd - macroStart);
+                currentBuffer = expansionStart.buffer();
+                lastEndOffset = macroEnd;
+                firstToken = false;
+            } else {
+                // Check if there's a gap between last position and this macro
+                // (there shouldn't be in well-formed code, but handle it)
+                if (macroStart > lastEndOffset) {
+                    // There's non-macro text between - include it
+                    result += sourceText.substr(lastEndOffset, macroStart - lastEndOffset);
+                }
+                result += sourceText.substr(macroStart, macroEnd - macroStart);
+                lastEndOffset = macroEnd;
+            }
+        } else {
+            // Non-macro token - use its location to extract from original source
+            auto tokenBuffer = tokenLoc.buffer();
+            std::string_view sourceText = sm.getSourceText(tokenBuffer);
+
+            if (sourceText.empty()) {
+                result += token.rawText();
+                continue;
+            }
+
+            size_t tokenStart = tokenLoc.offset();
+            size_t tokenLen = token.rawText().length();
+            size_t tokenEnd = tokenStart + tokenLen;
+
+            // Safety check
+            if (tokenStart >= sourceText.size() || tokenEnd > sourceText.size()) {
+                result += token.rawText();
+                continue;
+            }
+
+            if (firstToken || currentBuffer != tokenBuffer) {
+                result += sourceText.substr(tokenStart, tokenLen);
+                currentBuffer = tokenBuffer;
+                lastEndOffset = tokenEnd;
+                firstToken = false;
+            } else {
+                // Same buffer - check for gap (whitespace, etc.)
+                if (tokenStart > lastEndOffset && currentBuffer == tokenBuffer) {
+                    // Include any text between tokens (like whitespace within the expression)
+                    result += sourceText.substr(lastEndOffset, tokenStart - lastEndOffset);
+                }
+                result += sourceText.substr(tokenStart, tokenLen);
+                lastEndOffset = tokenEnd;
+            }
+        }
+    }
+
+    return result;
+}
+
+/// Extract original dimension syntax from a port symbol (preserves params/macros).
+/// Returns empty string if syntax cannot be extracted.
+std::string extractOriginalDimensions(const PortSymbol& portSym, const slang::SourceManager& sm) {
+    // Try to get the internal symbol (the actual variable declaration)
+    const Symbol* internal = portSym.internalSymbol;
+    if (!internal) return "";
+
+    // Get the declared type which has the original syntax
+    const DeclaredType* declType = internal->getDeclaredType();
+    if (!declType) return "";
+
+    const DataTypeSyntax* typeSyntax = declType->getTypeSyntax();
+    if (!typeSyntax) return "";
+
+    // Extract dimensions based on the type syntax kind
+    std::string result;
+
+    // For IntegerType (logic, reg, bit, etc.) with dimensions
+    if (IntegerTypeSyntax::isKind(typeSyntax->kind)) {
+        auto& intType = typeSyntax->as<IntegerTypeSyntax>();
+        for (size_t i = 0; i < intType.dimensions.size(); ++i) {
+            result += extractOriginalSourceText(*intType.dimensions[i], sm);
+        }
+    }
+    // For ImplicitType (just dimensions, no keyword)
+    else if (typeSyntax->kind == SyntaxKind::ImplicitType) {
+        auto& implType = typeSyntax->as<ImplicitTypeSyntax>();
+        for (size_t i = 0; i < implType.dimensions.size(); ++i) {
+            result += extractOriginalSourceText(*implType.dimensions[i], sm);
+        }
+    }
+
+    return result;
+}
+
+} // anonymous namespace
 
 std::vector<PortInfo> getModulePortsFromCompilation(
     slang::ast::Compilation& compilation,
@@ -82,11 +255,12 @@ std::vector<PortInfo> getModulePortsFromCompilation(
             auto& type = portSym->getType();
             info.width = type.getBitWidth();
 
+            // Try to extract original syntax (preserves parameters/macros)
+            info.original_range_str = extractOriginalDimensions(*portSym, *compilation.getSourceManager());
+
+            // Fallback: extract from resolved type (preserves multi-dimensional structure)
             if (type.isPackedArray()) {
-                auto& packed = type.getCanonicalType().as<PackedArrayType>();
-                auto range = packed.range;
-                info.range_str = "[" + std::to_string(range.left) + ":" +
-                                std::to_string(range.right) + "]";
+                info.range_str = extractPackedDimensions(type);
             } else if (info.width > 1) {
                 info.range_str = "[" + std::to_string(info.width - 1) + ":0]";
             }

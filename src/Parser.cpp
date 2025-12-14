@@ -560,12 +560,20 @@ InlineConfig parseInlineConfig(const std::string& content, const std::string& fi
             } else {
                 warnInvalidValue(key, value, "strict, lenient");
             }
+        } else if (key == "resolved-ranges") {
+            if (value == "true" || value == "1" || value == "yes") {
+                config.resolved_ranges = true;
+            } else if (value == "false" || value == "0" || value == "no") {
+                config.resolved_ranges = false;
+            } else {
+                warnInvalidValue(key, value, "true, false, yes, no, 1, 0");
+            }
         } else {
             // Unknown key - warn and store as custom option
             if (diagnostics) {
                 diagnostics->addWarning(
                     "Unknown inline config key 'slang-autos-" + key + "'. "
-                    "Valid keys: libdir, libext, incdir, grouping, indent, alignment, strictness",
+                    "Valid keys: libdir, libext, incdir, grouping, indent, alignment, strictness, resolved-ranges",
                     "", 0, "inline_config");
             }
             config.custom_options[key] = value;

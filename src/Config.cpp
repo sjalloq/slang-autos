@@ -18,6 +18,7 @@ AutosToolOptions MergedConfig::toToolOptions() const {
     opts.alignment = alignment;
     opts.indent = indent;
     opts.verbosity = verbosity;
+    opts.resolved_ranges = resolved_ranges;
     return opts;
 }
 
@@ -165,6 +166,11 @@ std::optional<FileConfig> ConfigLoader::loadFile(
             if (auto val = (*behavior)["single_unit"].as_boolean()) {
                 config.single_unit = val->get();
             }
+
+            // resolved_ranges
+            if (auto val = (*behavior)["resolved_ranges"].as_boolean()) {
+                config.resolved_ranges = val->get();
+            }
         }
 
         return config;
@@ -231,6 +237,9 @@ MergedConfig ConfigLoader::merge(
         if (file_config->single_unit) {
             result.single_unit = *file_config->single_unit;
         }
+        if (file_config->resolved_ranges) {
+            result.resolved_ranges = *file_config->resolved_ranges;
+        }
     }
 
     // Layer 2: Inline config (overrides file config)
@@ -260,6 +269,9 @@ MergedConfig ConfigLoader::merge(
     if (inline_config.strictness) {
         result.strictness = *inline_config.strictness;
     }
+    if (inline_config.resolved_ranges) {
+        result.resolved_ranges = *inline_config.resolved_ranges;
+    }
 
     // Layer 3: CLI options (highest priority)
     // CLI overrides all if explicitly specified
@@ -277,6 +289,9 @@ MergedConfig ConfigLoader::merge(
     }
     if (cli_flags.has_single_unit) {
         result.single_unit = cli_options.single_unit;
+    }
+    if (cli_flags.has_resolved_ranges) {
+        result.resolved_ranges = cli_options.resolved_ranges;
     }
 
     return result;

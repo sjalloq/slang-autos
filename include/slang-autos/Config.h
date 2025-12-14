@@ -28,12 +28,13 @@ struct FileConfig {
     std::optional<StrictnessMode> strictness;
     std::optional<int> verbosity;       ///< 0=quiet, 1=normal, 2=verbose
     std::optional<bool> single_unit;    ///< Treat all files as single compilation unit
+    std::optional<bool> resolved_ranges;///< Use resolved integer widths instead of original syntax
 
     /// Check if any configuration was loaded
     [[nodiscard]] bool empty() const {
         return !libdirs && !libext && !incdirs &&
                !indent && !alignment &&
-               !strictness && !verbosity && !single_unit;
+               !strictness && !verbosity && !single_unit && !resolved_ranges;
     }
 };
 
@@ -45,6 +46,7 @@ struct CliFlags {
     bool has_indent = false;
     bool has_verbosity = false;
     bool has_single_unit = false;
+    bool has_resolved_ranges = false;
 };
 
 /// Final merged configuration with all values resolved.
@@ -63,6 +65,7 @@ struct MergedConfig {
     StrictnessMode strictness = StrictnessMode::Lenient;
     int verbosity = 1;
     bool single_unit = true;    ///< Default: treat all files as single compilation unit
+    bool resolved_ranges = false; ///< Default: preserve original syntax
 
     /// Convert to AutosToolOptions (for use with AutosTool)
     [[nodiscard]] struct AutosToolOptions toToolOptions() const;

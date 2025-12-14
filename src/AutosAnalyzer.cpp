@@ -511,10 +511,11 @@ void AutosAnalyzer::generateAutoportsReplacement(
     // Build replacement text (goes after marker, before close paren)
     std::ostringstream oss;
 
-    auto fmt = [](const std::string& dir, const NetInfo& n) {
+    bool prefer_original = preferOriginalSyntax();
+    auto fmt = [prefer_original](const std::string& dir, const NetInfo& n) {
         std::ostringstream p;
         p << dir << " logic";
-        if (!n.getRangeStr().empty()) p << " " << n.getRangeStr();
+        if (!n.getRangeStr(prefer_original).empty()) p << " " << n.getRangeStr(prefer_original);
         p << " " << n.name;
         return p.str();
     };
@@ -665,11 +666,13 @@ std::string AutosAnalyzer::generateAutologicDecls(
 
     if (to_declare.empty()) return "";
 
+    bool prefer_original = preferOriginalSyntax();
+
     std::ostringstream oss;
     for (const auto& net : to_declare) {
         oss << options_.indent << "logic";
-        if (!net.getRangeStr().empty()) {
-            oss << " " << net.getRangeStr();
+        if (!net.getRangeStr(prefer_original).empty()) {
+            oss << " " << net.getRangeStr(prefer_original);
         }
         oss << " " << net.name << ";\n";
     }

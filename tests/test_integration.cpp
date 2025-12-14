@@ -283,9 +283,9 @@ TEST_CASE("Integration - manual port without trailing comma", "[integration]") {
     CHECK(result.modified_content.find("/*AUTOINST*/,") != std::string::npos);
 }
 
-TEST_CASE("Integration - parameterized port widths resolve correctly", "[integration]") {
-    // AUTOLOGIC should use resolved widths, not parameter expressions,
-    // because the parameter may not exist in the parent module's scope
+TEST_CASE("Integration - parameterized port widths preserve original syntax", "[integration]") {
+    // AUTOLOGIC should preserve original syntax (e.g., [WIDTH-1:0])
+    // The user is responsible for ensuring parameters are in scope
     auto top_sv = getFixturePath("param_width/top_autologic.sv");
     auto lib_dir = getFixturePath("param_width/lib");
 
@@ -306,9 +306,70 @@ TEST_CASE("Integration - parameterized port widths resolve correctly", "[integra
     CHECK(result.success);
     CHECK(result.autologic_count == 1);
 
-    // internal_data should be declared with resolved width [7:0] (from WIDTH=8)
-    // NOT [WIDTH-1:0] which would be invalid in this scope
-    CHECK(result.modified_content.find("logic [7:0] internal_data") != std::string::npos);
+    // internal_data should be declared with original syntax [WIDTH-1:0]
+    // Note: User must ensure WIDTH is in scope for valid SystemVerilog
+    CHECK(result.modified_content.find("logic  [WIDTH-1:0] internal_data") != std::string::npos);
+}
+
+TEST_CASE("Integration - macro port widths preserve original syntax", "[integration]") {
+    // AUTOPORTS should preserve original macro syntax (e.g., [`DATA_WIDTH-1:0])
+    // not the expanded value (e.g., [8-1:0] or [7:0])
+    auto top_sv = getFixturePath("macro_test/top.sv");
+    auto lib_dir = getFixturePath("macro_test/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, true);
+
+    CHECK(result.success);
+    CHECK(result.autoinst_count == 1);
+
+    // Ports should use original macro syntax, not expanded values
+    CHECK(result.modified_content.find("`DATA_WIDTH-1:0]") != std::string::npos);
+    // Should NOT have the expanded form
+    CHECK(result.modified_content.find("[8-1:0]") == std::string::npos);
+    CHECK(result.modified_content.find("[7:0]") == std::string::npos);
+}
+
+TEST_CASE("Integration - resolved_ranges option outputs resolved widths", "[integration]") {
+    // With resolved_ranges option, should output [7:0] instead of [`DATA_WIDTH-1:0]
+    auto top_sv = getFixturePath("macro_test/top.sv");
+    auto lib_dir = getFixturePath("macro_test/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool::Options opts;
+    opts.resolved_ranges = true;
+    AutosTool tool(opts);
+
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, true);
+
+    CHECK(result.success);
+    CHECK(result.autoinst_count == 1);
+
+    // With resolved_ranges, should have resolved widths
+    CHECK(result.modified_content.find("[7:0]") != std::string::npos);
+    // Should NOT have macro syntax
+    CHECK(result.modified_content.find("`DATA_WIDTH") == std::string::npos);
 }
 
 TEST_CASE("Integration - shared port declarations (input a, b, c)", "[integration]") {

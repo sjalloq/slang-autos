@@ -40,28 +40,36 @@ struct NetInfo {
     std::optional<int> msb;         ///< MSB of widest connection
     std::optional<int> lsb;         ///< LSB (usually 0)
     std::string type_str = "logic"; ///< Declaration type
+    std::string original_range_str; ///< Original syntax: "[WIDTH-1:0]" or "[7:0][3:0]"
     bool is_signed = false;
 
     NetInfo() = default;
-    explicit NetInfo(std::string n, int w = 1)
-        : name(std::move(n)), width(w) {
+    explicit NetInfo(std::string n, int w = 1, std::string orig_range = "")
+        : name(std::move(n)), width(w), original_range_str(std::move(orig_range)) {
         if (w > 1) {
             msb = w - 1;
             lsb = 0;
         }
     }
 
-    /// Merge with another connection (take max width)
-    void merge(int other_width) {
+    /// Merge with another connection (take max width, keep original range from widest)
+    void merge(int other_width, const std::string& other_original_range = "") {
         if (other_width > width) {
             width = other_width;
             msb = other_width - 1;
             lsb = 0;
+            // Use the original range from the widest connection
+            if (!other_original_range.empty()) {
+                original_range_str = other_original_range;
+            }
         }
     }
 
     /// Get the range string for declarations
-    [[nodiscard]] std::string getRangeStr() const {
+    /// @param prefer_original If true, prefers original syntax (e.g., [WIDTH-1:0])
+    ///                        If false, returns resolved values (e.g., [7:0])
+    [[nodiscard]] std::string getRangeStr(bool prefer_original = true) const {
+        if (prefer_original && !original_range_str.empty()) return original_range_str;
         if (width <= 1) return "";
         return "[" + std::to_string(width - 1) + ":0]";
     }

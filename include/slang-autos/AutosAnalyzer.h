@@ -27,6 +27,7 @@ struct AutosAnalyzerOptions {
     std::string indent;
     PortGrouping grouping{};
     StrictnessMode strictness{};
+    bool resolved_ranges = false; ///< Use resolved widths instead of original syntax
     DiagnosticCollector* diagnostics = nullptr;
 };
 
@@ -171,6 +172,9 @@ private:
                                         const std::vector<PortInfo>& ports);
     std::string generateAutologicDecls(const std::set<std::string>& existing_decls);
     std::string detectIndent(const slang::syntax::SyntaxNode& node) const;
+
+    /// Returns true if original syntax should be preserved (opposite of resolved_ranges)
+    [[nodiscard]] bool preferOriginalSyntax() const { return !options_.resolved_ranges; }
 
     // ════════════════════════════════════════════════════════════════════════
     // Member data

@@ -45,6 +45,7 @@ struct AutosToolOptions {
     std::string indent = "  ";  ///< Default 2 spaces (matches MergedConfig)
     int verbosity = 1;
     bool single_unit = true;
+    bool resolved_ranges = false; ///< Use resolved widths instead of original syntax
 };
 
 /// Main orchestrator for AUTO macro expansion.

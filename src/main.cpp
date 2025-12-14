@@ -102,6 +102,11 @@ int main(int argc, char* argv[]) {
     driver.cmdLine.add("--no-single-unit", noSingleUnit,
                        "Treat files as separate compilation units (disables default --single-unit)");
 
+    // Output format options
+    std::optional<bool> resolvedRanges;
+    driver.cmdLine.add("--resolved-ranges", resolvedRanges,
+                       "Use resolved integer widths instead of original parameter/expression syntax");
+
     // ========================================================================
     // Parse command line
     // ========================================================================
@@ -150,6 +155,7 @@ int main(int argc, char* argv[]) {
     cli_flags.has_indent = false;  // No CLI --indent option anymore
     cli_flags.has_verbosity = verbose.has_value() || quiet.has_value();
     cli_flags.has_single_unit = noSingleUnit.has_value();
+    cli_flags.has_resolved_ranges = resolvedRanges.has_value();
 
     // Build CLI options (these are the "raw" CLI values)
     AutosTool::Options cli_options;
@@ -159,6 +165,7 @@ int main(int argc, char* argv[]) {
     cli_options.indent = "  ";  // Default 2 spaces (can be overridden by file config or inline)
     cli_options.verbosity = quiet.value_or(false) ? 0 : (verbose.value_or(false) ? 2 : 1);
     cli_options.single_unit = !noSingleUnit.value_or(false);
+    cli_options.resolved_ranges = resolvedRanges.value_or(false);
 
     // Merge: CLI > config file > defaults
     // Note: Inline config is handled per-file in the expansion loop

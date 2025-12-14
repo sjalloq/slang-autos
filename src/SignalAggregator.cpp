@@ -29,19 +29,22 @@ void SignalAggregator::addFromInstance(
 
         const std::string& net_name = conn.signal_expr;
         int port_width = port_it->width;
+        // Prefer original syntax, fallback to resolved range
+        std::string port_range = port_it->getRangeStr(true);
 
         // Get or create net usage entry
         auto& usage = nets_[net_name];
         if (usage.info.name.empty()) {
             usage.info.name = net_name;
             usage.info.width = port_width;
+            usage.info.original_range_str = port_range;
             if (port_width > 1) {
                 usage.info.msb = port_width - 1;
                 usage.info.lsb = 0;
             }
         } else {
-            // Merge - take max width
-            usage.info.merge(port_width);
+            // Merge - take max width, keep original range from widest
+            usage.info.merge(port_width, port_range);
         }
 
         // Track instance source

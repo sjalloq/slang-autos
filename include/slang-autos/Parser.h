@@ -24,6 +24,7 @@ enum class PortGrouping;
 ///   // slang-autos-indent: 4
 ///   // slang-autos-alignment: true
 ///   // slang-autos-strictness: lenient
+///   // slang-autos-resolved-ranges: true
 struct InlineConfig {
     std::vector<std::string> libdirs;   ///< Library directories (-y equivalents)
     std::vector<std::string> libext;    ///< File extensions (+libext+ equivalents)
@@ -32,6 +33,7 @@ struct InlineConfig {
     std::optional<int> indent;          ///< Indentation spaces (-1 for tab)
     std::optional<bool> alignment;      ///< Port name alignment
     std::optional<StrictnessMode> strictness; ///< Strictness mode
+    std::optional<bool> resolved_ranges; ///< Use resolved widths instead of original syntax
     std::unordered_map<std::string, std::string> custom_options; ///< Other options
 
     /// Check if any configuration was found
@@ -39,6 +41,7 @@ struct InlineConfig {
         return libdirs.empty() && libext.empty() && incdirs.empty() &&
                !grouping.has_value() && !indent.has_value() &&
                !alignment.has_value() && !strictness.has_value() &&
+               !resolved_ranges.has_value() &&
                custom_options.empty();
     }
 };
