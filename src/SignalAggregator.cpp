@@ -114,4 +114,20 @@ std::vector<NetInfo> SignalAggregator::getInternalNets() const {
     return result;
 }
 
+const NetInfo* SignalAggregator::getNetInfo(const std::string& name) const {
+    auto it = nets_.find(name);
+    if (it != nets_.end()) {
+        return &it->second.info;
+    }
+    return nullptr;
+}
+
+void SignalAggregator::addUnusedSignal(const std::string& name, int width) {
+    unused_signals_.emplace_back(name, width);
+}
+
+const std::vector<NetInfo>& SignalAggregator::getUnusedSignals() const {
+    return unused_signals_;
+}
+
 } // namespace slang_autos

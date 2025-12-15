@@ -173,6 +173,19 @@ private:
     std::string generateAutologicDecls(const std::set<std::string>& existing_decls);
     std::string detectIndent(const slang::syntax::SyntaxNode& node) const;
 
+    /// Adapt signal expression for width mismatches.
+    /// Applies bit-slicing (port < signal), zero-padding (input port > signal),
+    /// or unused signal concatenation (output port > signal).
+    /// @param signal The original signal expression
+    /// @param port Port info with width and direction
+    /// @param match Template match result (to check if template was applied)
+    /// @param instance_name Instance name for generating unused signal names
+    /// @return Adapted signal expression
+    std::string adaptSignalWidth(const std::string& signal,
+                                  const PortInfo& port,
+                                  const MatchResult& match,
+                                  const std::string& instance_name);
+
     /// Returns true if original syntax should be preserved (opposite of resolved_ranges)
     [[nodiscard]] bool preferOriginalSyntax() const { return !options_.resolved_ranges; }
 

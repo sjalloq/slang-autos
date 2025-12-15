@@ -1457,3 +1457,155 @@ TEST_CASE("Idempotency - adversarial inputs remain stable", "[idempotency][adver
     // Cleanup
     fs::remove_all(temp_dir);
 }
+
+// =============================================================================
+// Width Adaptation Tests
+// =============================================================================
+
+TEST_CASE("Width adaptation - slice down when port narrower than signal", "[width]") {
+    auto top_sv = getFixturePath("width_adaptation/top_slice.sv");
+    auto lib_dir = getFixturePath("width_adaptation/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    REQUIRE(result.success);
+
+    // wide (16-bit) should get full width connection
+    CHECK(result.modified_content.find(".data_in  (data_in)") != std::string::npos);
+    CHECK(result.modified_content.find(".data_out (data_out)") != std::string::npos);
+
+    // narrow (8-bit) should get sliced connections
+    CHECK(result.modified_content.find(".data_in  (data_in[7:0])") != std::string::npos);
+    CHECK(result.modified_content.find(".data_out (data_out[7:0])") != std::string::npos);
+}
+
+TEST_CASE("Width adaptation - single-bit uses [0] not [0:0]", "[width]") {
+    auto top_sv = getFixturePath("width_adaptation/top_single_bit.sv");
+    auto lib_dir = getFixturePath("width_adaptation/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    REQUIRE(result.success);
+
+    // one_bit (1-bit) should get [0] slice, not [0:0]
+    CHECK(result.modified_content.find(".data_in  (data_in[0])") != std::string::npos);
+    CHECK(result.modified_content.find(".data_out (data_out[0])") != std::string::npos);
+
+    // Should NOT have [0:0] format
+    CHECK(result.modified_content.find("[0:0]") == std::string::npos);
+}
+
+TEST_CASE("Width adaptation - existing multi_instance fixture slices correctly", "[width]") {
+    // This test uses the existing multi_instance fixture which has:
+    // producer with 16-bit data output
+    // consumer with 8-bit data input
+    auto top_sv = getFixturePath("multi_instance/top.sv");
+    auto lib_dir = getFixturePath("multi_instance/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    REQUIRE(result.success);
+
+    // Producer (16-bit output) connects to full signal
+    CHECK(result.modified_content.find("u_producer") != std::string::npos);
+    // Look for producer's .data connection - should be unsliced
+    // Producer's data output is full width
+    size_t producer_pos = result.modified_content.find("u_producer");
+    size_t consumer_pos = result.modified_content.find("u_consumer");
+    REQUIRE(producer_pos != std::string::npos);
+    REQUIRE(consumer_pos != std::string::npos);
+
+    // Extract producer section
+    std::string producer_section = result.modified_content.substr(
+        producer_pos, consumer_pos - producer_pos);
+    // Producer should have .data (data) - full width
+    CHECK(producer_section.find(".data  (data)") != std::string::npos);
+
+    // Extract consumer section
+    std::string consumer_section = result.modified_content.substr(consumer_pos);
+    // Consumer should have .data (data[7:0]) - sliced to 8-bit
+    CHECK(consumer_section.find(".data         (data[7:0])") != std::string::npos);
+}
+
+TEST_CASE("Width adaptation - idempotency with slices", "[width][idempotency]") {
+    auto top_sv = getFixturePath("width_adaptation/top_slice.sv");
+    auto lib_dir = getFixturePath("width_adaptation/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool1;
+    bool loaded1 = tool1.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+    REQUIRE(loaded1);
+
+    // First expansion
+    auto result1 = tool1.expandFile(top_sv, /*dry_run=*/true);
+    REQUIRE(result1.success);
+
+    // Write result to temp file
+    auto temp_dir = fs::temp_directory_path() / "slang_autos_width_idempotent";
+    fs::create_directories(temp_dir);
+    auto temp_sv = temp_dir / "top_slice.sv";
+    {
+        std::ofstream ofs(temp_sv);
+        ofs << result1.modified_content;
+    }
+
+    // Copy lib files
+    if (fs::exists(temp_dir / "lib")) {
+        fs::remove_all(temp_dir / "lib");
+    }
+    fs::copy(lib_dir, temp_dir / "lib", fs::copy_options::recursive);
+
+    // Second expansion on the result
+    AutosTool tool2;
+    bool loaded2 = tool2.loadWithArgs({
+        temp_sv.string(),
+        "-y", (temp_dir / "lib").string(),
+        "+libext+.sv"
+    });
+    REQUIRE(loaded2);
+
+    auto result2 = tool2.expandFile(temp_sv, /*dry_run=*/true);
+    REQUIRE(result2.success);
+
+    // Results should be identical (idempotent)
+    CHECK(result1.modified_content == result2.modified_content);
+
+    // Cleanup
+    fs::remove_all(temp_dir);
+}

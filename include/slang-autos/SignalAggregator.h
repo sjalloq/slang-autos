@@ -106,9 +106,21 @@ public:
     /// These are instance-to-instance connections that need logic declarations.
     [[nodiscard]] std::vector<NetInfo> getInternalNets() const;
 
+    /// Look up aggregated net info by name. Returns nullptr if not found.
+    [[nodiscard]] const NetInfo* getNetInfo(const std::string& name) const;
+
+    /// Register an unused signal (for capturing discarded output bits).
+    /// @param name Signal name (e.g., "unused_data_u_inst")
+    /// @param width Width of the unused portion
+    void addUnusedSignal(const std::string& name, int width);
+
+    /// Get all registered unused signals - for AUTOLOGIC declarations.
+    [[nodiscard]] const std::vector<NetInfo>& getUnusedSignals() const;
+
 private:
     std::unordered_map<std::string, NetUsage> nets_;
     std::set<std::string> inout_nets_;  ///< Nets connected to inout ports
+    std::vector<NetInfo> unused_signals_;  ///< Unused signals for output width adaptation
 };
 
 } // namespace slang_autos

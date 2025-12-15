@@ -634,6 +634,9 @@ std::string AutosAnalyzer::generatePortConnections(
                 ? TemplateMatcher::formatSpecialValue(match.signal_name)
                 : match.signal_name;
 
+            // Apply width adaptation (slicing, padding, or unused signal)
+            signal = adaptSignalWidth(signal, *port, match, inst.instance_name);
+
             if (options_.alignment) {
                 oss << "." << std::left << std::setw(static_cast<int>(max_len))
                     << port->name << " (" << signal << ")";
@@ -656,11 +659,19 @@ std::string AutosAnalyzer::generateAutologicDecls(
     const std::set<std::string>& existing_decls) {
 
     auto nets = aggregator_.getInternalNets();
+    const auto& unused_signals = aggregator_.getUnusedSignals();
 
     std::vector<NetInfo> to_declare;
     for (const auto& net : nets) {
         if (!existing_decls.count(net.name)) {
             to_declare.push_back(net);
+        }
+    }
+
+    // Also add unused signals (for output width adaptation)
+    for (const auto& unused : unused_signals) {
+        if (!existing_decls.count(unused.name)) {
+            to_declare.push_back(unused);
         }
     }
 
@@ -678,6 +689,72 @@ std::string AutosAnalyzer::generateAutologicDecls(
     }
 
     return oss.str();
+}
+
+std::string AutosAnalyzer::adaptSignalWidth(
+    const std::string& signal,
+    const PortInfo& port,
+    const MatchResult& match,
+    const std::string& instance_name) {
+
+    // Rule 1: Templates win - if user provided explicit template, use as-is
+    if (match.matched_rule != nullptr) {
+        return signal;
+    }
+
+    // Rule 2: Special values (constants, unconnected) - no adaptation
+    if (TemplateMatcher::isSpecialValue(match.signal_name)) {
+        return signal;
+    }
+
+    // Rule 3: Look up aggregated width for this signal
+    const NetInfo* net_info = aggregator_.getNetInfo(signal);
+    if (!net_info) {
+        // Signal not in aggregator - return unchanged
+        return signal;
+    }
+
+    int aggregated_width = net_info->width;
+    int port_width = port.width;
+
+    // Rule 4: Equal widths - no adaptation needed
+    if (port_width == aggregated_width) {
+        return signal;
+    }
+
+    // Rule 5: Port narrower than signal - slice down
+    if (port_width < aggregated_width) {
+        if (port_width == 1) {
+            // Single-bit: use [0] not [0:0]
+            return signal + "[0]";
+        } else {
+            // Multi-bit: use [msb:0]
+            return signal + "[" + std::to_string(port_width - 1) + ":0]";
+        }
+    }
+
+    // Rule 6: Port wider than signal - pad/extend
+    // port_width > aggregated_width
+    if (port.direction == "input") {
+        // Zero-pad inputs: {'0, signal}
+        return "{\'0, " + signal + "}";
+    } else if (port.direction == "output") {
+        // Use unused signal for upper bits
+        std::string unused_name = "unused_" + signal + "_" + instance_name;
+        int unused_width = port_width - aggregated_width;
+        aggregator_.addUnusedSignal(unused_name, unused_width);
+        return "{" + unused_name + ", " + signal + "}";
+    } else {
+        // Inout: warn and return unchanged (ambiguous case)
+        if (options_.diagnostics) {
+            options_.diagnostics->addWarning(
+                "Width mismatch on inout port '" + port.name + "': port is " +
+                std::to_string(port_width) + "-bit but signal '" + signal +
+                "' is " + std::to_string(aggregated_width) + "-bit. " +
+                "Bidirectional width adaptation is ambiguous.");
+        }
+        return signal;
+    }
 }
 
 std::string AutosAnalyzer::detectIndent(const SyntaxNode& node) const {
