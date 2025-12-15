@@ -367,6 +367,23 @@ TEST_CASE("parseInlineConfig - parses strictness", "[config]") {
     CHECK(*config.strictness == StrictnessMode::Strict);
 }
 
+TEST_CASE("parseInlineConfig - parses resolved-ranges", "[config]") {
+    // Key has a hyphen - tests that the regex captures hyphenated keys correctly
+    std::string content = "// slang-autos-resolved-ranges: true\n";
+
+    auto config = parseInlineConfig(content);
+
+    REQUIRE(config.resolved_ranges.has_value());
+    CHECK(*config.resolved_ranges == true);
+
+    // Also test false
+    std::string content2 = "// slang-autos-resolved-ranges: false\n";
+    auto config2 = parseInlineConfig(content2);
+
+    REQUIRE(config2.resolved_ranges.has_value());
+    CHECK(*config2.resolved_ranges == false);
+}
+
 // ============================================================================
 // Environment Variable Expansion Tests
 // ============================================================================

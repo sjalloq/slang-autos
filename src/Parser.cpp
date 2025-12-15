@@ -470,8 +470,9 @@ InlineConfig parseInlineConfig(const std::string& content, const std::string& fi
 
     // Pattern: // slang-autos-KEY: VALUES
     // We look for single-line comments with the slang-autos- prefix
+    // Note: Key pattern includes hyphens for options like "resolved-ranges"
     static const std::regex config_re(
-        R"re(//\s*slang-autos-(\w+)\s*:\s*(.+)$)re",
+        R"re(//\s*slang-autos-([\w-]+)\s*:\s*(.+)$)re",
         std::regex::multiline);
 
     auto begin = std::sregex_iterator(content.begin(), content.end(), config_re);
