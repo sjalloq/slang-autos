@@ -271,35 +271,27 @@ int main(int argc, char* argv[]) {
         auto compilation = driver.createCompilation();
 
         // Process slang diagnostics
+        // Note: slang-autos is lenient - only InvalidTopModule prevents expansion.
+        // Other slang errors (timescale, elaboration issues, etc.) don't block
+        // expansion since slang-autos only needs the module ports to be parseable.
         {
             auto& diags = compilation->getAllDiagnostics();
-            bool hasSlangErrors = false;
             bool hasInvalidTop = false;
 
             for (const auto& d : diags) {
                 if (d.code == slang::diag::InvalidTopModule) {
                     hasInvalidTop = true;
                 }
-                // Check if this is an error-level diagnostic
-                auto severity = slang::getDefaultSeverity(d.code);
-                if (severity == slang::DiagnosticSeverity::Error ||
-                    severity == slang::DiagnosticSeverity::Fatal) {
-                    hasSlangErrors = true;
-                }
             }
 
-            // In verbose mode, show all slang diagnostics
+            // Only show slang diagnostics in verbose mode
             if (verbosity >= 2 && !diags.empty()) {
                 OS::printE(slang::DiagnosticEngine::reportAll(
                     driver.sourceManager, diags));
             }
-            // Otherwise, only show if there are errors
-            else if (hasSlangErrors && !diags.empty()) {
-                OS::printE(slang::DiagnosticEngine::reportAll(
-                    driver.sourceManager, diags));
-            }
 
-            // Special handling for InvalidTopModule
+            // Special handling for InvalidTopModule - this is a hard error
+            // (module name must match filename for slang-autos to work)
             if (hasInvalidTop) {
                 any_errors = true;
                 OS::printE(fmt::format(
@@ -309,11 +301,8 @@ int main(int argc, char* argv[]) {
                 continue;
             }
 
-            // Skip this file if slang found errors (but not just warnings)
-            if (hasSlangErrors) {
-                any_errors = true;
-                continue;
-            }
+            // For all other slang errors: proceed with expansion
+            // If the error actually prevents expansion, tool.expandFile() will fail
         }
 
         // Expand autos in this file
