@@ -10,6 +10,9 @@
 #include "slang/syntax/AllSyntax.h"
 #include "slang/text/SourceManager.h"
 
+#include <functional>
+#include <sstream>
+
 namespace slang_autos {
 
 using namespace slang::ast;
@@ -195,14 +198,37 @@ std::vector<PortInfo> getModulePortsFromCompilation(
     auto& root = compilation.getRoot();
     const InstanceBodySymbol* found_body = nullptr;
 
+    // Helper function to check a member for a matching module body.
+    // Uses std::function to allow recursive calls for multi-dimensional arrays.
+    std::function<bool(const Symbol&)> checkMember = [&](const Symbol& member) -> bool {
+        // Handle single instances
+        if (auto* inst = member.as_if<InstanceSymbol>()) {
+            if (inst->body.name == module_name) {
+                found_body = &inst->body;
+                return true;
+            }
+        }
+        // Handle instance arrays (e.g., module_name inst[2:0] (...))
+        // InstanceArraySymbol contains InstanceSymbol elements
+        else if (auto* instArray = member.as_if<InstanceArraySymbol>()) {
+            // Get the first element of the array to access the body
+            if (!instArray->elements.empty()) {
+                // Elements are InstanceSymbol or InstanceArraySymbol (for multi-dimensional)
+                const Symbol* elem = instArray->elements[0];
+                // Recursively check the element
+                if (checkMember(*elem)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+
     // Search for the module in compilation's top instances
     for (auto* topInst : root.topInstances) {
         for (auto& member : topInst->body.members()) {
-            if (auto* inst = member.as_if<InstanceSymbol>()) {
-                if (inst->body.name == module_name) {
-                    found_body = &inst->body;
-                    break;
-                }
+            if (checkMember(member)) {
+                break;
             }
         }
         if (found_body) break;
@@ -210,10 +236,43 @@ std::vector<PortInfo> getModulePortsFromCompilation(
 
     if (!found_body) {
         if (diagnostics) {
+            // Build diagnostic message with debug info about what was searched
+            std::ostringstream msg;
+            msg << "Module not found: " << module_name;
+
+            // In verbose mode, list what modules WERE found
+            std::vector<std::string> found_modules;
+            for (auto* topInst : root.topInstances) {
+                for (auto& member : topInst->body.members()) {
+                    if (auto* inst = member.as_if<InstanceSymbol>()) {
+                        found_modules.push_back(std::string(inst->body.name));
+                    } else if (auto* instArray = member.as_if<InstanceArraySymbol>()) {
+                        // For instance arrays, indicate it's an array
+                        if (!instArray->elements.empty()) {
+                            if (auto* elem = instArray->elements[0]->as_if<InstanceSymbol>()) {
+                                found_modules.push_back(std::string(elem->body.name) + " (array)");
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (!found_modules.empty()) {
+                msg << " (found: ";
+                for (size_t i = 0; i < found_modules.size() && i < 5; ++i) {
+                    if (i > 0) msg << ", ";
+                    msg << found_modules[i];
+                }
+                if (found_modules.size() > 5) {
+                    msg << ", ... (" << (found_modules.size() - 5) << " more)";
+                }
+                msg << ")";
+            }
+
             if (strictness == StrictnessMode::Strict) {
-                diagnostics->addError("Module not found: " + module_name);
+                diagnostics->addError(msg.str());
             } else {
-                diagnostics->addWarning("Module not found: " + module_name);
+                diagnostics->addWarning(msg.str());
             }
         }
         return ports;

@@ -7,12 +7,19 @@ namespace slang_autos {
 
 namespace {
 
-// Special value mappings
+// Special value mappings - shorthand forms map to Verilog unsized literals
 const std::unordered_map<std::string, std::string> SPECIAL_VALUE_MAP = {
     {"_", ""},       // Unconnected
-    {"'0", "'0"},    // Constant 0 (unsized literal)
-    {"'1", "'1"},    // Constant 1 (unsized literal)
-    {"'z", "'z"},    // High impedance (unsized literal)
+    {"0", "'0"},     // Shorthand for constant 0
+    {"1", "'1"},     // Shorthand for constant 1
+    {"z", "'z"},     // Shorthand for high impedance
+    {"Z", "'z"},     // Shorthand for high impedance (uppercase)
+    {"x", "'x"},     // Shorthand for unknown
+    {"X", "'x"},     // Shorthand for unknown (uppercase)
+    {"'0", "'0"},    // Also accept quoted form
+    {"'1", "'1"},
+    {"'z", "'z"},
+    {"'x", "'x"},
 };
 
 } // anonymous namespace

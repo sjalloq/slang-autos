@@ -1,6 +1,7 @@
 #include "slang-autos/AutosAnalyzer.h"
 #include "slang-autos/Constants.h"
 #include "slang-autos/CompilationUtils.h"
+#include "slang-autos/SignalAggregator.h"
 #include "slang-autos/TemplateMatcher.h"
 
 #include <sstream>
@@ -8,6 +9,7 @@
 #include <iomanip>
 
 #include <slang/ast/Compilation.h>
+#include <slang/ast/symbols/InstanceSymbols.h>
 #include <slang/syntax/SyntaxTree.h>
 #include <slang/syntax/AllSyntax.h>
 
@@ -64,7 +66,7 @@ void AutosAnalyzer::processModule(const ModuleDeclarationSyntax& module) {
         return;
     }
 
-    resolvePortsAndSignals(info);
+    resolvePortsAndSignals(module, info);
     generateReplacements(module, info);
 }
 
@@ -134,6 +136,48 @@ AutosAnalyzer::collectModuleInfo(const ModuleDeclarationSyntax& module) {
                 }
             }
         }
+        // ─────────────────────────────────────────────────────────────────────
+        // Manual instances (no AUTOINST) - collect for signal direction tracking
+        // ─────────────────────────────────────────────────────────────────────
+        else if (member->kind == SyntaxKind::HierarchyInstantiation) {
+            auto& hier = member->as<HierarchyInstantiationSyntax>();
+            if (!hier.instances.empty()) {
+                ManualInstInfo manual_info;
+                manual_info.node = &hier;
+                manual_info.module_type = std::string(hier.type.valueText());
+
+                auto& first_inst = *hier.instances[0];
+                if (first_inst.decl) {
+                    manual_info.instance_name = std::string(first_inst.decl->name.valueText());
+                }
+
+                // Extract port connections directly from AST
+                for (auto* conn : first_inst.connections) {
+                    if (conn->kind == SyntaxKind::NamedPortConnection) {
+                        auto& named = conn->as<NamedPortConnectionSyntax>();
+                        std::string port_name = std::string(named.name.valueText());
+
+                        if (!port_name.empty()) {
+                            CollectedPortConnection port_conn;
+                            port_conn.port_name = port_name;
+
+                            if (named.expr) {
+                                // Keep string form for output generation
+                                port_conn.signal_expr = named.expr->toString();
+                                // Extract identifiers directly from AST - no re-parsing needed
+                                port_conn.signal_identifiers = extractIdentifiersFromSyntax(*named.expr);
+                            }
+
+                            manual_info.port_connections.push_back(std::move(port_conn));
+                        }
+                    }
+                }
+
+                if (!manual_info.instance_name.empty()) {
+                    info.manual_insts.push_back(manual_info);
+                }
+            }
+        }
 
         // ─────────────────────────────────────────────────────────────────────
         // AUTOLOGIC marker - position from trivia
@@ -171,6 +215,38 @@ AutosAnalyzer::collectModuleInfo(const ModuleDeclarationSyntax& module) {
         if (!in_autologic_block) {
             if (auto name = extractDeclarationName(*member)) {
                 info.existing_decls.insert(*name);
+            }
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Continuous assign statements - track both LHS and RHS signals
+        // LHS signals are driven internally (should not become input ports)
+        // RHS signals are consumed internally (should not become output ports)
+        // e.g., assign sys2aux_sync = {sig_a, sig_b};
+        //   - sys2aux_sync is LHS (driven internally)
+        //   - sig_a, sig_b are RHS (consumed internally)
+        // ─────────────────────────────────────────────────────────────────────
+        if (member->kind == SyntaxKind::ContinuousAssign) {
+            auto& assign = member->as<ContinuousAssignSyntax>();
+            for (auto* expr : assign.assignments) {
+                // Each assignment is an AssignmentExpression (which is a BinaryExpressionSyntax)
+                if (expr->kind == SyntaxKind::AssignmentExpression) {
+                    auto& binary = expr->as<BinaryExpressionSyntax>();
+
+                    // Extract all identifiers from LHS - these are driven internally
+                    auto lhs_signals = extractIdentifiersFromSyntax(*binary.left);
+                    for (const auto& sig : lhs_signals) {
+                        info.assign_driven.insert(sig);
+                    }
+
+                    // Extract all identifiers from RHS - these are consumed internally
+                    // This prevents instance outputs that feed into assign from becoming
+                    // external output ports (they're consumed locally)
+                    auto rhs_signals = extractIdentifiersFromSyntax(*binary.right);
+                    for (const auto& sig : rhs_signals) {
+                        info.assign_consumed.insert(sig);
+                    }
+                }
             }
         }
     }
@@ -308,14 +384,57 @@ AutosAnalyzer::findMarkerInNode(const SyntaxNode& node, std::string_view marker)
 // Phase 2: Resolution
 // ════════════════════════════════════════════════════════════════════════════
 
-void AutosAnalyzer::resolvePortsAndSignals(CollectedInfo& info) {
+void AutosAnalyzer::resolvePortsAndSignals(
+    const ModuleDeclarationSyntax& module,
+    CollectedInfo& info) {
+
     aggregator_ = SignalAggregator();
 
+    // Process AUTOINST instances
     for (auto& inst : info.autoinsts) {
         auto ports = getModulePorts(inst.module_type);
         if (ports.empty()) continue;
 
         auto connections = buildConnections(inst, ports);
+        aggregator_.addFromInstance(inst.instance_name, connections, ports);
+    }
+
+    // Process manual (non-AUTOINST) instances for signal direction tracking
+    for (auto& inst : info.manual_insts) {
+        auto ports = getModulePorts(inst.module_type);
+        if (ports.empty()) continue;
+
+        // Build connections from the manual port connections
+        std::vector<PortConnection> connections;
+        for (const auto& port_conn : inst.port_connections) {
+            // Find the port direction
+            auto port_it = std::find_if(ports.begin(), ports.end(),
+                [&](const PortInfo& p) { return p.name == port_conn.port_name; });
+
+            if (port_it != ports.end()) {
+                PortConnection conn;
+                conn.port_name = port_conn.port_name;
+                conn.signal_expr = port_conn.signal_expr;
+                conn.direction = port_it->direction;
+                // Use pre-extracted identifiers from AST traversal
+                conn.signal_identifiers = port_conn.signal_identifiers;
+
+                // Check for special values
+                if (TemplateMatcher::isSpecialValue(port_conn.signal_expr)) {
+                    if (port_conn.signal_expr == "_") {
+                        conn.is_unconnected = true;
+                    } else {
+                        conn.is_constant = true;
+                    }
+                }
+
+                // Check if expression is a concatenation - signals inside should be internal
+                conn.is_concatenation = isConcatenation(port_conn.signal_expr);
+
+                connections.push_back(conn);
+            }
+        }
+
         aggregator_.addFromInstance(inst.instance_name, connections, ports);
     }
 }
@@ -351,6 +470,10 @@ std::vector<PortConnection> AutosAnalyzer::buildConnections(
             }
         } else {
             conn.signal_expr = match.signal_name;
+            // Extract identifiers from template result (parse once here, not in aggregator)
+            conn.signal_identifiers = extractIdentifiers(match.signal_name);
+            // Check if expression is a concatenation - signals inside should be internal
+            conn.is_concatenation = isConcatenation(match.signal_name);
         }
 
         connections.push_back(conn);
@@ -444,7 +567,7 @@ void AutosAnalyzer::generateAutoInstReplacement(
 }
 
 void AutosAnalyzer::generateAutologicReplacement(const CollectedInfo& info) {
-    std::string decls = generateAutologicDecls(info.existing_decls);
+    std::string decls = generateAutologicDecls(info);
 
     if (decls.empty() && !info.autologic.has_existing_block) {
         return;
@@ -498,15 +621,58 @@ void AutosAnalyzer::generateAutoportsReplacement(
     auto outputs = aggregator_.getExternalOutputNets();
     auto inouts = aggregator_.getInoutNets();
 
-    // Filter existing
-    auto filter = [&](std::vector<NetInfo>& nets) {
+    // Filter existing ports, local declarations, and assign-related signals
+    // - existing_ports: ports declared before /*AUTOPORTS*/ (should not be regenerated)
+    // - existing_decls: local variable/net declarations (should not become ports)
+    // - assign_driven: signals on LHS of assign statements (driven internally, not inputs)
+    // - assign_consumed: signals on RHS of assign statements (consumed internally, not outputs)
+
+    // Filter for inputs: exclude existing, declared, and assign-driven signals
+    auto filter_inputs = [&](std::vector<NetInfo>& nets) {
         nets.erase(std::remove_if(nets.begin(), nets.end(),
-            [&](const NetInfo& n) { return info.autoports.existing_ports.count(n.name); }),
+            [&](const NetInfo& n) {
+                return info.autoports.existing_ports.count(n.name) ||
+                       info.existing_decls.count(n.name) ||
+                       info.assign_driven.count(n.name);
+            }),
             nets.end());
     };
-    filter(inputs);
-    filter(outputs);
-    filter(inouts);
+
+    // Filter for outputs: exclude existing, declared, and assign-consumed signals
+    // (signals consumed on RHS of assign are used internally, not external outputs)
+    auto filter_outputs = [&](std::vector<NetInfo>& nets) {
+        nets.erase(std::remove_if(nets.begin(), nets.end(),
+            [&](const NetInfo& n) {
+                return info.autoports.existing_ports.count(n.name) ||
+                       info.existing_decls.count(n.name) ||
+                       info.assign_consumed.count(n.name);
+            }),
+            nets.end());
+    };
+
+    // Filter for inouts: both driven and consumed checks apply
+    auto filter_inouts = [&](std::vector<NetInfo>& nets) {
+        nets.erase(std::remove_if(nets.begin(), nets.end(),
+            [&](const NetInfo& n) {
+                return info.autoports.existing_ports.count(n.name) ||
+                       info.existing_decls.count(n.name) ||
+                       info.assign_driven.count(n.name) ||
+                       info.assign_consumed.count(n.name);
+            }),
+            nets.end());
+    };
+
+    filter_outputs(outputs);
+    filter_inouts(inouts);
+    filter_inputs(inputs);
+
+    // Sort each group alphabetically by port name
+    auto sort_by_name = [](const NetInfo& a, const NetInfo& b) {
+        return a.name < b.name;
+    };
+    std::sort(outputs.begin(), outputs.end(), sort_by_name);
+    std::sort(inouts.begin(), inouts.end(), sort_by_name);
+    std::sort(inputs.begin(), inputs.end(), sort_by_name);
 
     // Build replacement text (goes after marker, before close paren)
     std::ostringstream oss;
@@ -655,23 +821,57 @@ std::string AutosAnalyzer::generatePortConnections(
     return oss.str();
 }
 
-std::string AutosAnalyzer::generateAutologicDecls(
-    const std::set<std::string>& existing_decls) {
+std::string AutosAnalyzer::generateAutologicDecls(const CollectedInfo& info) {
+    const auto& existing_decls = info.existing_decls;
 
     auto nets = aggregator_.getInternalNets();
     const auto& unused_signals = aggregator_.getUnusedSignals();
 
     std::vector<NetInfo> to_declare;
+    std::set<std::string> already_added;
+
     for (const auto& net : nets) {
         if (!existing_decls.count(net.name)) {
             to_declare.push_back(net);
+            already_added.insert(net.name);
         }
     }
 
     // Also add unused signals (for output width adaptation)
     for (const auto& unused : unused_signals) {
-        if (!existing_decls.count(unused.name)) {
+        if (!existing_decls.count(unused.name) && !already_added.count(unused.name)) {
             to_declare.push_back(unused);
+            already_added.insert(unused.name);
+        }
+    }
+
+    // Add signals that are driven by assign statements but consumed by instances.
+    // These aren't "internal" by the driven_by_instance && consumed_by_instance rule,
+    // but they DO need declarations because they're used by instances.
+    for (const auto& sig_name : info.assign_driven) {
+        if (existing_decls.count(sig_name) || already_added.count(sig_name)) {
+            continue;  // Already declared or already added
+        }
+        // Check if this signal is consumed by an instance
+        const NetInfo* net_info = aggregator_.getNetInfo(sig_name);
+        if (net_info) {
+            to_declare.push_back(*net_info);
+            already_added.insert(sig_name);
+        }
+    }
+
+    // Add signals that are consumed by assign statements (RHS) but driven by instances.
+    // These are internal wires that need declarations.
+    // Example: assign sys2aux = {ctrl_sig, ...}; where ctrl_sig is an instance output
+    for (const auto& sig_name : info.assign_consumed) {
+        if (existing_decls.count(sig_name) || already_added.count(sig_name)) {
+            continue;  // Already declared or already added
+        }
+        // Check if this signal is driven by an instance (it's in the aggregator)
+        const NetInfo* net_info = aggregator_.getNetInfo(sig_name);
+        if (net_info) {
+            to_declare.push_back(*net_info);
+            already_added.insert(sig_name);
         }
     }
 

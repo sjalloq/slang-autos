@@ -774,6 +774,103 @@ TEST_CASE("AUTOPORTS - preserves user-defined ports", "[integration][autoports]"
     }
 }
 
+TEST_CASE("AUTOPORTS - local declarations not added to ports", "[integration][autoports]") {
+    // This tests that signals declared locally (e.g., "logic [2:0] local_sig;")
+    // are NOT added to AUTOPORTS even when they're connected via template.
+    // The aggregator should check slang's AST to see if the signal exists
+    // in the parent scope before adding it as an external port.
+    auto top_sv = getFixturePath("autoports_local_decl/top.sv");
+    auto lib_dir = getFixturePath("autoports_local_decl/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+
+    CHECK(result.success);
+
+    // local_sig is declared as "logic [2:0] local_sig" in the module body.
+    // It should NOT appear in AUTOPORTS because it's already locally declared.
+    // The signal is connected to sig_a via template, but since it's
+    // already declared, it shouldn't become a port.
+
+    // Find the port list section (between "module top(" and ");")
+    size_t autoports_pos = result.modified_content.find("/*AUTOPORTS*/");
+    REQUIRE(autoports_pos != std::string::npos);
+
+    // Find the end of the port list (the ");" after AUTOPORTS expansion)
+    size_t port_list_end = result.modified_content.find(");", autoports_pos);
+    REQUIRE(port_list_end != std::string::npos);
+
+    // Extract just the port list section
+    std::string port_section = result.modified_content.substr(autoports_pos, port_list_end - autoports_pos);
+
+    // local_sig should NOT be in the port list - it's already declared locally as logic
+    INFO("Port section: " << port_section);
+    CHECK(port_section.find("local_sig") == std::string::npos);
+
+    // But it should still be in the module body as a local declaration
+    CHECK(result.modified_content.find("logic [2:0] local_sig") != std::string::npos);
+
+    // Regular external signals (clk, rst_n, data_out) should still be in AUTOPORTS
+    CHECK(port_section.find("clk") != std::string::npos);
+    CHECK(port_section.find("rst_n") != std::string::npos);
+    CHECK(port_section.find("data_out") != std::string::npos);
+}
+
+TEST_CASE("AUTOPORTS - concatenation extracts signal name", "[integration][autoports]") {
+    // This tests that when a template uses a concatenation like {1'b0, sig_a},
+    // AUTOPORTS extracts just the signal name (sig_a) and doesn't use the
+    // entire concatenation expression as a port name.
+    auto top_sv = getFixturePath("autoports_concatenation/top.sv");
+    auto lib_dir = getFixturePath("autoports_concatenation/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+
+    CHECK(result.success);
+
+    // Find the AUTOPORTS section
+    size_t autoports_pos = result.modified_content.find("/*AUTOPORTS*/");
+    REQUIRE(autoports_pos != std::string::npos);
+
+    size_t port_list_end = result.modified_content.find(");", autoports_pos);
+    REQUIRE(port_list_end != std::string::npos);
+
+    std::string port_section = result.modified_content.substr(autoports_pos, port_list_end - autoports_pos);
+
+    // The signal name "sig_a" should be in the port list
+    CHECK(port_section.find("sig_a") != std::string::npos);
+
+    // But the concatenation expression should NOT appear in the port list
+    // (it would be invalid Verilog: "input logic [2:0] {1'b0, sig_a}")
+    CHECK(port_section.find("{1'b0") == std::string::npos);
+    CHECK(port_section.find("1'b0, sig_a}") == std::string::npos);
+
+    // AUTOINST should correctly use the concatenation in the connection
+    CHECK(result.modified_content.find(".sig_a    ({1'b0, sig_a})") != std::string::npos);
+}
+
 // =============================================================================
 // CLI Behavior Tests (run actual binary)
 // =============================================================================
@@ -1608,4 +1705,164 @@ TEST_CASE("Width adaptation - idempotency with slices", "[width][idempotency]") 
 
     // Cleanup
     fs::remove_all(temp_dir);
+}
+
+// =============================================================================
+// Output Concatenation Tests (internal signals)
+// =============================================================================
+
+TEST_CASE("Integration - output concatenation signals become AUTOLOGIC not AUTOPORTS", "[integration]") {
+    // When a template maps an output port to a concatenation like {sig_a, sig_b},
+    // those signals should NOT appear in AUTOPORTS (they're internal wires).
+    // Instead, they should appear in AUTOLOGIC.
+    auto top_sv = getFixturePath("autoports_internal_signal/top.sv");
+    auto lib_dir = getFixturePath("autoports_internal_signal/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    REQUIRE(result.success);
+
+    // AUTOPORTS should NOT contain sig_a or sig_b (they're internal)
+    // They should only appear in AUTOLOGIC
+    auto autoports_start = result.modified_content.find("/*AUTOPORTS*/");
+    auto autoports_end = result.modified_content.find(");", autoports_start);
+    std::string autoports_section = result.modified_content.substr(autoports_start, autoports_end - autoports_start);
+
+    CHECK(autoports_section.find("sig_a") == std::string::npos);
+    CHECK(autoports_section.find("sig_b") == std::string::npos);
+
+    // data_in should appear in AUTOPORTS (it's an external input)
+    CHECK(autoports_section.find("data_in") != std::string::npos);
+
+    // AUTOLOGIC should contain sig_a and sig_b
+    auto autologic_start = result.modified_content.find("/*AUTOLOGIC*/");
+    auto autologic_end = result.modified_content.find("// End of automatics", autologic_start);
+    std::string autologic_section = result.modified_content.substr(autologic_start, autologic_end - autologic_start);
+
+    CHECK(autologic_section.find("sig_a") != std::string::npos);
+    CHECK(autologic_section.find("sig_b") != std::string::npos);
+}
+
+TEST_CASE("Integration - input concatenation signals still become AUTOPORTS", "[integration]") {
+    // When a template maps an INPUT port to a concatenation like {1'b0, sig_a},
+    // sig_a should still appear in AUTOPORTS (we're providing it as input).
+    auto top_sv = getFixturePath("autoports_concatenation/top.sv");
+    auto lib_dir = getFixturePath("autoports_concatenation/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    REQUIRE(result.success);
+
+    // AUTOPORTS should contain sig_a (it's an input being provided)
+    auto autoports_start = result.modified_content.find("/*AUTOPORTS*/");
+    auto autoports_end = result.modified_content.find(");", autoports_start);
+    std::string autoports_section = result.modified_content.substr(autoports_start, autoports_end - autoports_start);
+
+    CHECK(autoports_section.find("sig_a") != std::string::npos);
+}
+
+TEST_CASE("Integration - assign LHS signals should NOT become input AUTOPORTS", "[integration]") {
+    // When signals are on the LHS of an assign statement, they are driven internally
+    // and should NOT appear as input ports in AUTOPORTS.
+    // Example: assign {sig_a, sig_b} = pipelined_signals;
+    // sig_a and sig_b are driven by the assign, so they shouldn't be input ports.
+    auto top_sv = getFixturePath("autoports_assign_concat/top_no_decl.sv");
+    auto lib_dir = getFixturePath("autoports_assign_concat/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    REQUIRE(result.success);
+
+    // AUTOPORTS should NOT contain sig_a or sig_b (they're driven by assign)
+    auto autoports_start = result.modified_content.find("/*AUTOPORTS*/");
+    auto autoports_end = result.modified_content.find(");", autoports_start);
+    std::string autoports_section = result.modified_content.substr(autoports_start, autoports_end - autoports_start);
+
+    // sig_a and sig_b should NOT be in AUTOPORTS - they are driven internally
+    CHECK(autoports_section.find("sig_a") == std::string::npos);
+    CHECK(autoports_section.find("sig_b") == std::string::npos);
+
+    // data_out should be in AUTOPORTS (it's an output from the child instance)
+    CHECK(autoports_section.find("data_out") != std::string::npos);
+}
+
+TEST_CASE("Integration - assign RHS signals should NOT become output AUTOPORTS", "[integration]") {
+    // When instance output signals are on the RHS of an assign statement, they are
+    // consumed internally and should NOT appear as output ports in AUTOPORTS.
+    // Example: assign sig_bus = {sig_a, sig_b};
+    // sig_a and sig_b are instance outputs consumed by the assign, so they shouldn't
+    // be output ports - they should be internal wires in AUTOLOGIC.
+    //
+    // Note: sig_bus itself is not tracked by slang-autos because it's not connected
+    // to any instance. slang-autos tracks signals through instance port connections.
+    auto top_sv = getFixturePath("autoports_assign_concat/top_rhs.sv");
+    auto lib_dir = getFixturePath("autoports_assign_concat/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    REQUIRE(result.success);
+
+    // AUTOPORTS should NOT contain sig_a or sig_b (they're consumed by assign)
+    auto autoports_start = result.modified_content.find("/*AUTOPORTS*/");
+    auto autoports_end = result.modified_content.find(");", autoports_start);
+    std::string autoports_section = result.modified_content.substr(autoports_start, autoports_end - autoports_start);
+
+    // sig_a and sig_b should NOT be in AUTOPORTS - they are consumed internally
+    CHECK(autoports_section.find("sig_a") == std::string::npos);
+    CHECK(autoports_section.find("sig_b") == std::string::npos);
+
+    // data_in should be in AUTOPORTS as input (it's an input to the producer instance)
+    CHECK(autoports_section.find("data_in") != std::string::npos);
+
+    // AUTOLOGIC should contain sig_a and sig_b (they're internal wires)
+    auto autologic_start = result.modified_content.find("/*AUTOLOGIC*/");
+    auto autologic_end = result.modified_content.find("// End of automatics", autologic_start);
+    std::string autologic_section = result.modified_content.substr(autologic_start, autologic_end - autologic_start);
+
+    CHECK(autologic_section.find("sig_a") != std::string::npos);
+    CHECK(autologic_section.find("sig_b") != std::string::npos);
 }

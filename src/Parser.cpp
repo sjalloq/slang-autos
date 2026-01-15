@@ -17,6 +17,53 @@
 namespace slang_autos {
 
 // ============================================================================
+// Comment Stripping for Template Rules
+// ============================================================================
+
+/// Strip Verilog-style comments from a signal expression.
+/// Handles both // line comments and /* */ block comments.
+static std::string stripComments(const std::string& expr) {
+    std::string result;
+    result.reserve(expr.size());
+
+    const char* ptr = expr.data();
+    const char* end = ptr + expr.size();
+
+    while (ptr != end) {
+        // Check for // line comment (consumes rest of string since we're single-line)
+        if (ptr + 1 < end && ptr[0] == '/' && ptr[1] == '/') {
+            break;  // Rest is comment, stop here
+        }
+
+        // Check for /* block comment
+        if (ptr + 1 < end && ptr[0] == '/' && ptr[1] == '*') {
+            // Find the closing */
+            const char* close = ptr + 2;
+            while (close + 1 < end && !(close[0] == '*' && close[1] == '/')) {
+                ++close;
+            }
+            if (close + 1 < end) {
+                // Skip past the closing */
+                ptr = close + 2;
+                continue;
+            } else {
+                // No closing */, treat rest as comment
+                break;
+            }
+        }
+
+        result += *ptr++;
+    }
+
+    // Trim trailing whitespace
+    while (!result.empty() && std::isspace(static_cast<unsigned char>(result.back()))) {
+        result.pop_back();
+    }
+
+    return result;
+}
+
+// ============================================================================
 // Environment Variable Expansion
 // ============================================================================
 
@@ -245,6 +292,9 @@ std::optional<AutoTemplate> Re2TemplateParser::parseTemplate(
     for (; rule_it != rule_end; ++rule_it) {
         std::string port_pattern = (*rule_it)[1].str();
         std::string signal_expr = (*rule_it)[2].str();
+
+        // Strip Verilog-style comments from signal expression
+        signal_expr = stripComments(signal_expr);
 
         // Strip trailing comma from signal expression (verilog-mode compatibility)
         if (!signal_expr.empty() && signal_expr.back() == ',') {

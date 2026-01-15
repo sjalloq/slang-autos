@@ -115,3 +115,67 @@ TEST_CASE("AutoParser - parse AUTOLOGIC", "[parser]") {
     }
 }
 
+TEST_CASE("AutoParser - template comments", "[parser]") {
+    DiagnosticCollector diag;
+    AutoParser parser(&diag);
+
+    SECTION("Line comment with //") {
+        parser.parseText(R"(
+            /* submod AUTO_TEMPLATE
+               data_in => my_data_in   // Input signal
+               data_out => my_data_out // Output signal
+            */
+        )");
+
+        REQUIRE(parser.templates().size() == 1);
+        auto& tmpl = parser.templates()[0];
+        REQUIRE(tmpl.rules.size() == 2);
+        CHECK(tmpl.rules[0].port_pattern == "data_in");
+        CHECK(tmpl.rules[0].signal_expr == "my_data_in");
+        CHECK(tmpl.rules[1].port_pattern == "data_out");
+        CHECK(tmpl.rules[1].signal_expr == "my_data_out");
+    }
+
+    // Note: /* */ inline comments inside templates are NOT supported because
+    // Verilog block comments don't nest. The first */ would close the template.
+    // Use // line comments instead.
+
+    SECTION("Comment-only lines are ignored") {
+        parser.parseText(R"(
+            /* submod AUTO_TEMPLATE
+               // Clock and reset
+               clk => sys_clk
+               rst_n => sys_rst_n
+               // Data signals
+               data => bus_data
+            */
+        )");
+
+        REQUIRE(parser.templates().size() == 1);
+        auto& tmpl = parser.templates()[0];
+        REQUIRE(tmpl.rules.size() == 3);
+        CHECK(tmpl.rules[0].signal_expr == "sys_clk");
+        CHECK(tmpl.rules[1].signal_expr == "sys_rst_n");
+        CHECK(tmpl.rules[2].signal_expr == "bus_data");
+    }
+
+    SECTION("Multiple line comments") {
+        parser.parseText(R"(
+            /* submod AUTO_TEMPLATE
+               // Group 1
+               port_a => sig_a    // inline comment
+               port_b => sig_b    // another comment
+               // Group 2
+               port_c => sig_c
+            */
+        )");
+
+        REQUIRE(parser.templates().size() == 1);
+        auto& tmpl = parser.templates()[0];
+        REQUIRE(tmpl.rules.size() == 3);
+        CHECK(tmpl.rules[0].signal_expr == "sig_a");
+        CHECK(tmpl.rules[1].signal_expr == "sig_b");
+        CHECK(tmpl.rules[2].signal_expr == "sig_c");
+    }
+}
+

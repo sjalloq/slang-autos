@@ -17,6 +17,8 @@
 
 namespace slang::ast {
 class Compilation;
+class InstanceBodySymbol;
+class Scope;
 }
 
 namespace slang_autos {
@@ -103,14 +105,32 @@ private:
         std::set<std::string> existing_ports;
     };
 
+    /// Port connection info collected during AST traversal
+    struct CollectedPortConnection {
+        std::string port_name;
+        std::string signal_expr;  ///< For output generation
+        std::vector<std::string> signal_identifiers;  ///< Pre-extracted from AST
+    };
+
+    /// Information about a manual (non-AUTOINST) instance for signal tracking
+    struct ManualInstInfo {
+        const slang::syntax::HierarchyInstantiationSyntax* node = nullptr;
+        std::string module_type;
+        std::string instance_name;
+        std::vector<CollectedPortConnection> port_connections;
+    };
+
     /// All information collected from a single module
     struct CollectedInfo {
         std::vector<AutoInstInfo> autoinsts;
+        std::vector<ManualInstInfo> manual_insts;  ///< Non-AUTOINST instances for signal tracking
         AutoLogicInfo autologic;
         AutoPortsInfo autoports;
         bool has_autologic = false;
         bool has_autoports = false;
         std::set<std::string> existing_decls;
+        std::set<std::string> assign_driven;    ///< Signals on LHS of assign statements (driven internally)
+        std::set<std::string> assign_consumed;  ///< Signals on RHS of assign statements (consumed internally)
     };
 
     // ════════════════════════════════════════════════════════════════════════
@@ -119,7 +139,8 @@ private:
 
     void processModule(const slang::syntax::ModuleDeclarationSyntax& module);
     CollectedInfo collectModuleInfo(const slang::syntax::ModuleDeclarationSyntax& module);
-    void resolvePortsAndSignals(CollectedInfo& info);
+    void resolvePortsAndSignals(const slang::syntax::ModuleDeclarationSyntax& module,
+                                CollectedInfo& info);
     void generateReplacements(const slang::syntax::ModuleDeclarationSyntax& module,
                               const CollectedInfo& info);
 
@@ -170,7 +191,7 @@ private:
 
     std::string generatePortConnections(const AutoInstInfo& inst,
                                         const std::vector<PortInfo>& ports);
-    std::string generateAutologicDecls(const std::set<std::string>& existing_decls);
+    std::string generateAutologicDecls(const CollectedInfo& info);
     std::string detectIndent(const slang::syntax::SyntaxNode& node) const;
 
     /// Adapt signal expression for width mismatches.

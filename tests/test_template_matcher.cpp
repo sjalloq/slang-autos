@@ -103,14 +103,33 @@ TEST_CASE("TemplateMatcher - builtin variables", "[template]") {
 }
 
 TEST_CASE("TemplateMatcher - special values", "[template]") {
+    // Shorthand forms (preferred in templates)
     CHECK(TemplateMatcher::isSpecialValue("_"));
+    CHECK(TemplateMatcher::isSpecialValue("0"));
+    CHECK(TemplateMatcher::isSpecialValue("1"));
+    CHECK(TemplateMatcher::isSpecialValue("z"));
+    CHECK(TemplateMatcher::isSpecialValue("Z"));
+    CHECK(TemplateMatcher::isSpecialValue("x"));
+    CHECK(TemplateMatcher::isSpecialValue("X"));
+
+    // Quoted forms also accepted
     CHECK(TemplateMatcher::isSpecialValue("'0"));
     CHECK(TemplateMatcher::isSpecialValue("'1"));
     CHECK(TemplateMatcher::isSpecialValue("'z"));
+    CHECK(TemplateMatcher::isSpecialValue("'x"));
+
     CHECK_FALSE(TemplateMatcher::isSpecialValue("signal"));
 
-    // Special values keep unsized literal form (not converted to 1'bX)
+    // Shorthand forms expand to unsized literals
     CHECK(TemplateMatcher::formatSpecialValue("_") == "");
+    CHECK(TemplateMatcher::formatSpecialValue("0") == "'0");
+    CHECK(TemplateMatcher::formatSpecialValue("1") == "'1");
+    CHECK(TemplateMatcher::formatSpecialValue("z") == "'z");
+    CHECK(TemplateMatcher::formatSpecialValue("Z") == "'z");
+    CHECK(TemplateMatcher::formatSpecialValue("x") == "'x");
+    CHECK(TemplateMatcher::formatSpecialValue("X") == "'x");
+
+    // Quoted forms pass through
     CHECK(TemplateMatcher::formatSpecialValue("'0") == "'0");
     CHECK(TemplateMatcher::formatSpecialValue("'1") == "'1");
     CHECK(TemplateMatcher::formatSpecialValue("'z") == "'z");

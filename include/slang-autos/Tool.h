@@ -28,6 +28,7 @@ struct ExpansionResult {
     std::vector<Replacement> replacements;  ///< All replacements made
     int autoinst_count = 0;         ///< Number of AUTOINSTs expanded
     int autologic_count = 0;        ///< Number of AUTOLOGICs expanded
+    int autoports_count = 0;        ///< Number of AUTOPORTSs expanded
     bool success = true;            ///< false if fatal errors occurred
 
     /// Check if any changes were made

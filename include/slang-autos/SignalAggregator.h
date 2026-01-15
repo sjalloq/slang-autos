@@ -9,15 +9,55 @@
 #include "Diagnostics.h"
 #include "TemplateMatcher.h"
 
+namespace slang::ast {
+class Scope;
+}
+
+namespace slang::syntax {
+class SyntaxNode;
+}
+
 namespace slang_autos {
+
+/// Check if a string is a Verilog constant (sized/unsized literal).
+/// Examples: 1'b0, 8'hFF, 32'd100, '0, '1, 'z, 'x
+[[nodiscard]] bool isVerilogConstant(const std::string& s);
+
+/// Extract signal identifiers from an expression string.
+/// Parses the string and extracts identifiers. Use extractIdentifiersFromSyntax
+/// when you already have an AST node to avoid re-parsing.
+/// Example: "{1'b0, mac_phy_rate}" -> ["mac_phy_rate"]
+/// Example: "foo[7:0]" -> ["foo"]
+[[nodiscard]] std::vector<std::string> extractIdentifiers(const std::string& expr);
+
+/// Extract the maximum bit index from an expression string.
+/// Used to determine signal width when templates produce bit selects.
+/// Example: "signal[7]" -> 7
+/// Example: "signal[63:32]" -> 63
+/// Example: "signal" -> -1 (no bit select)
+[[nodiscard]] int extractMaxBitIndex(const std::string& expr);
+
+/// Check if an expression is a concatenation (top-level {...}).
+/// Example: "{sig_a, sig_b}" -> true
+/// Example: "signal" -> false
+/// Example: "{1'b0, sig_a}" -> true
+[[nodiscard]] bool isConcatenation(const std::string& expr);
+
+/// Extract signal identifiers directly from a syntax node.
+/// More efficient than extractIdentifiers(string) when AST is already available.
+/// Traverses the syntax tree and collects all identifier names.
+[[nodiscard]] std::vector<std::string> extractIdentifiersFromSyntax(
+    const slang::syntax::SyntaxNode& node);
 
 /// A single port connection in the expansion output.
 struct PortConnection {
     std::string port_name;      ///< Name of the port
-    std::string signal_expr;    ///< Signal expression to connect
+    std::string signal_expr;    ///< Signal expression for output generation
     std::string direction;      ///< "input", "output", "inout"
+    std::vector<std::string> signal_identifiers; ///< Extracted signal names (pre-computed)
     bool is_unconnected = false;///< Port left unconnected (via _ template)
     bool is_constant = false;   ///< Connected to constant ('0, '1, 'z)
+    bool is_concatenation = false; ///< Expression is a concatenation {a, b}
 
     PortConnection() = default;
     PortConnection(std::string port, std::string signal, std::string dir)
@@ -120,6 +160,7 @@ public:
 private:
     std::unordered_map<std::string, NetUsage> nets_;
     std::set<std::string> inout_nets_;  ///< Nets connected to inout ports
+    std::set<std::string> concatenation_nets_;  ///< Nets from concatenation expressions (internal-only)
     std::vector<NetInfo> unused_signals_;  ///< Unused signals for output width adaptation
 };
 

@@ -160,6 +160,7 @@ ExpansionResult AutosTool::expandFile(
     // ─────────────────────────────────────────────────────────────────────────
     result.autoinst_count = analyzer.autoinstCount();
     result.autologic_count = analyzer.autologicCount();
+    result.autoports_count = analyzer.autoportsCount();
 
     // ─────────────────────────────────────────────────────────────────────────
     // Write output

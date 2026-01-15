@@ -255,6 +255,7 @@ int main(int argc, char* argv[]) {
 
     int total_autoinst = 0;
     int total_autologic = 0;
+    int total_autoports = 0;
     int files_changed = 0;
     bool any_errors = false;
 
@@ -328,6 +329,7 @@ int main(int argc, char* argv[]) {
 
         total_autoinst += result.autoinst_count;
         total_autologic += result.autologic_count;
+        total_autoports += result.autoports_count;
 
         if (result.hasChanges()) {
             ++files_changed;
@@ -337,9 +339,9 @@ int main(int argc, char* argv[]) {
                 OS::print(writer.generateDiff(path, result.original_content,
                                               result.modified_content));
             } else if (verbosity >= 1) {
-                OS::print(fmt::format("{}: {} AUTOINST, {} AUTOLOGIC\n",
+                OS::print(fmt::format("{}: {} AUTOINST, {} AUTOLOGIC, {} AUTOPORTS\n",
                                       path.string(), result.autoinst_count,
-                                      result.autologic_count));
+                                      result.autologic_count, result.autoports_count));
             }
         }
 
@@ -355,9 +357,9 @@ int main(int argc, char* argv[]) {
     // Print summary
     if (verbosity >= 1 && !diff_mode) {
         std::string change_verb = (dry_run || check_mode) ? "would be " : "";
-        OS::print(fmt::format("\nSummary: {} file(s) {}changed, {} AUTOINST, {} AUTOLOGIC\n",
+        OS::print(fmt::format("\nSummary: {} file(s) {}changed, {} AUTOINST, {} AUTOLOGIC, {} AUTOPORTS\n",
                               files_changed, change_verb,
-                              total_autoinst, total_autologic));
+                              total_autoinst, total_autologic, total_autoports));
     }
 
     // In check mode, exit 1 if any files would be changed (for CI)
