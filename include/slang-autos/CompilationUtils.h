@@ -19,25 +19,30 @@ struct PortInfo {
     std::string name;               ///< Port name
     std::string direction;          ///< "input", "output", "inout"
     std::string type_str = "logic"; ///< Type: "wire", "logic", "reg", etc.
-    int width = 1;                  ///< Resolved bit width
-    std::string range_str;          ///< Resolved range: "[7:0]"
+    int width = 1;                  ///< Resolved bit width (of element type for arrays)
+    std::string range_str;          ///< Resolved packed range: "[7:0]"
     std::string original_range_str; ///< Original syntax: "[WIDTH-1:0]"
     std::optional<int> msb;         ///< Most significant bit (if range)
     std::optional<int> lsb;         ///< Least significant bit (if range)
     bool is_signed = false;
     bool is_array = false;
-    std::string array_dims;         ///< Array dimensions if any
+    std::string array_dims;         ///< Unpacked array dimensions: " [3:0][1:0]" (after name)
 
     PortInfo() = default;
     PortInfo(std::string n, std::string dir, int w = 1)
         : name(std::move(n)), direction(std::move(dir)), width(w) {}
 
-    /// Get the range string, optionally preferring original syntax
+    /// Get the packed range string, optionally preferring original syntax
     [[nodiscard]] std::string getRangeStr(bool prefer_original = true) const {
         if (prefer_original && !original_range_str.empty()) {
             return original_range_str;
         }
         return range_str;
+    }
+
+    /// Get the unpacked array dimensions (go after the signal name)
+    [[nodiscard]] std::string getArrayDims() const {
+        return array_dims;
     }
 };
 

@@ -683,6 +683,8 @@ void AutosAnalyzer::generateAutoportsReplacement(
         p << dir << " logic";
         if (!n.getRangeStr(prefer_original).empty()) p << " " << n.getRangeStr(prefer_original);
         p << " " << n.name;
+        // Add unpacked array dimensions after the name
+        if (!n.getArrayDims().empty()) p << n.getArrayDims();
         return p.str();
     };
 
@@ -885,7 +887,12 @@ std::string AutosAnalyzer::generateAutologicDecls(const CollectedInfo& info) {
         if (!net.getRangeStr(prefer_original).empty()) {
             oss << " " << net.getRangeStr(prefer_original);
         }
-        oss << " " << net.name << ";\n";
+        oss << " " << net.name;
+        // Add unpacked array dimensions after the name
+        if (!net.getArrayDims().empty()) {
+            oss << net.getArrayDims();
+        }
+        oss << ";\n";
     }
 
     return oss.str();

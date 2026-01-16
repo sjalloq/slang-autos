@@ -76,42 +76,56 @@ enum class PortGrouping {
 /// A net has no inherent direction - direction is a property of the port it connects to.
 struct NetInfo {
     std::string name;               ///< Net name
-    int width = 1;                  ///< Maximum width across all connections
+    int width = 1;                  ///< Maximum width across all connections (of element type for arrays)
     std::optional<int> msb;         ///< MSB of widest connection
     std::optional<int> lsb;         ///< LSB (usually 0)
     std::string type_str = "logic"; ///< Declaration type
     std::string original_range_str; ///< Original syntax: "[WIDTH-1:0]" or "[7:0][3:0]"
+    std::string range_str;          ///< Resolved packed range preserving structure: "[3:0][7:0]"
+    std::string array_dims;         ///< Unpacked array dimensions: " [3:0][1:0]" (after name)
     bool is_signed = false;
 
     NetInfo() = default;
-    explicit NetInfo(std::string n, int w = 1, std::string orig_range = "")
-        : name(std::move(n)), width(w), original_range_str(std::move(orig_range)) {
+    explicit NetInfo(std::string n, int w = 1, std::string orig_range = "", std::string resolved_range = "", std::string arr_dims = "")
+        : name(std::move(n)), width(w), original_range_str(std::move(orig_range)), range_str(std::move(resolved_range)), array_dims(std::move(arr_dims)) {
         if (w > 1) {
             msb = w - 1;
             lsb = 0;
         }
     }
 
-    /// Merge with another connection (take max width, keep original range from widest)
-    void merge(int other_width, const std::string& other_original_range = "") {
+    /// Merge with another connection (take max width, keep ranges from widest)
+    void merge(int other_width, const std::string& other_original_range = "", const std::string& other_resolved_range = "", const std::string& other_array_dims = "") {
         if (other_width > width) {
             width = other_width;
             msb = other_width - 1;
             lsb = 0;
-            // Use the original range from the widest connection
+            // Use the ranges from the widest connection
             if (!other_original_range.empty()) {
                 original_range_str = other_original_range;
+            }
+            if (!other_resolved_range.empty()) {
+                range_str = other_resolved_range;
+            }
+            if (!other_array_dims.empty()) {
+                array_dims = other_array_dims;
             }
         }
     }
 
-    /// Get the range string for declarations
+    /// Get the packed range string for declarations
     /// @param prefer_original If true, prefers original syntax (e.g., [WIDTH-1:0])
-    ///                        If false, returns resolved values (e.g., [7:0])
+    ///                        If false, returns resolved values preserving structure (e.g., [3:0][7:0])
     [[nodiscard]] std::string getRangeStr(bool prefer_original = true) const {
         if (prefer_original && !original_range_str.empty()) return original_range_str;
+        if (!range_str.empty()) return range_str;
         if (width <= 1) return "";
         return "[" + std::to_string(width - 1) + ":0]";
+    }
+
+    /// Get the unpacked array dimensions (go after the signal name)
+    [[nodiscard]] std::string getArrayDims() const {
+        return array_dims;
     }
 };
 

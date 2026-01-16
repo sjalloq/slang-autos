@@ -258,23 +258,30 @@ void SignalAggregator::addFromInstance(
         }
 
         int port_width = port_it->width;
-        // Prefer original syntax, fallback to resolved range
-        std::string port_range = port_it->getRangeStr(true);
+        // Get both original syntax and resolved range (preserves packed array structure)
+        std::string original_range = port_it->getRangeStr(true);   // e.g., "[WIDTH-1:0][3:0]"
+        std::string resolved_range = port_it->getRangeStr(false);  // e.g., "[7:0][3:0]"
+        std::string array_dims = port_it->getArrayDims();          // e.g., " [3:0]" (unpacked)
 
         // Extract max bit index from signal expression (e.g., signal[7] -> 7)
         // This handles cases where templates map multiple ports to different
         // bits of the same signal: data_in([0-9]) => data_bus[$1]
         int max_bit = extractMaxBitIndex(conn.signal_expr);
         int effective_width = port_width;
-        std::string effective_range = port_range;
+        std::string effective_original_range = original_range;
+        std::string effective_resolved_range = resolved_range;
+        std::string effective_array_dims = array_dims;
 
         if (max_bit >= 0) {
             // If bit index is specified, required width is max_bit + 1
             int required_width = max_bit + 1;
             if (required_width > effective_width) {
                 effective_width = required_width;
-                // Generate range string for the computed width
-                effective_range = "[" + std::to_string(max_bit) + ":0]";
+                // Generate range string for the computed width (loses packed array structure)
+                std::string computed_range = "[" + std::to_string(max_bit) + ":0]";
+                effective_original_range = computed_range;
+                effective_resolved_range = computed_range;
+                effective_array_dims = "";  // Lose unpacked dims when width is overridden
             }
         }
 
@@ -291,14 +298,16 @@ void SignalAggregator::addFromInstance(
             if (usage.info.name.empty()) {
                 usage.info.name = net_name;
                 usage.info.width = effective_width;
-                usage.info.original_range_str = effective_range;
+                usage.info.original_range_str = effective_original_range;
+                usage.info.range_str = effective_resolved_range;
+                usage.info.array_dims = effective_array_dims;
                 if (effective_width > 1) {
                     usage.info.msb = effective_width - 1;
                     usage.info.lsb = 0;
                 }
             } else {
-                // Merge - take max width, keep original range from widest
-                usage.info.merge(effective_width, effective_range);
+                // Merge - take max width, keep ranges from widest
+                usage.info.merge(effective_width, effective_original_range, effective_resolved_range, effective_array_dims);
             }
 
             // Track instance source

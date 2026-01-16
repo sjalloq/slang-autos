@@ -37,6 +37,23 @@ std::string extractPackedDimensions(const Type& type) {
     return result;
 }
 
+/// Recursively extract all unpacked array dimensions from a type.
+/// For logic [7:0] data [3:0][1:0], returns " [3:0][1:0]" (note leading space).
+std::string extractUnpackedDimensions(const Type& type) {
+    std::string result;
+
+    // Walk through nested unpacked array types
+    const Type* current = &type;
+    while (current->kind == SymbolKind::FixedSizeUnpackedArrayType) {
+        auto& unpacked = current->getCanonicalType().as<FixedSizeUnpackedArrayType>();
+        auto range = unpacked.range;
+        result += " [" + std::to_string(range.left) + ":" + std::to_string(range.right) + "]";
+        current = &unpacked.elementType;
+    }
+
+    return result;
+}
+
 /// Extract original source text for a syntax node, preserving macro references.
 /// Iterates through all tokens in the node and reconstructs the original text,
 /// replacing expanded macro tokens with their original macro invocations.
@@ -312,14 +329,27 @@ std::vector<PortInfo> getModulePortsFromCompilation(
             }
 
             auto& type = portSym->getType();
-            info.width = type.getBitWidth();
+
+            // For unpacked arrays, we need to get the element type for packed dimensions
+            // e.g., logic [7:0] data [3:0] has element type logic [7:0]
+            const Type* elementType = &type;
+            if (type.kind == SymbolKind::FixedSizeUnpackedArrayType) {
+                // Walk down to find the non-unpacked element type
+                while (elementType->kind == SymbolKind::FixedSizeUnpackedArrayType) {
+                    elementType = &elementType->getCanonicalType().as<FixedSizeUnpackedArrayType>().elementType;
+                }
+                info.is_array = true;
+                info.array_dims = extractUnpackedDimensions(type);
+            }
+
+            info.width = elementType->getBitWidth();
 
             // Try to extract original syntax (preserves parameters/macros)
             info.original_range_str = extractOriginalDimensions(*portSym, *compilation.getSourceManager());
 
             // Fallback: extract from resolved type (preserves multi-dimensional structure)
-            if (type.isPackedArray()) {
-                info.range_str = extractPackedDimensions(type);
+            if (elementType->isPackedArray()) {
+                info.range_str = extractPackedDimensions(*elementType);
             } else if (info.width > 1) {
                 info.range_str = "[" + std::to_string(info.width - 1) + ":0]";
             }
