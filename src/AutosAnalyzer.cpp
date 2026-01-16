@@ -249,6 +249,56 @@ AutosAnalyzer::collectModuleInfo(const ModuleDeclarationSyntax& module) {
                 }
             }
         }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Net declarations with inline initializers
+        // e.g., wire unused_ok = &{1'b0, sig_a};
+        // The net name (unused_ok) is driven internally
+        // The signals in the initializer (sig_a) are consumed internally
+        // ─────────────────────────────────────────────────────────────────────
+        if (member->kind == SyntaxKind::NetDeclaration) {
+            auto& netDecl = member->as<NetDeclarationSyntax>();
+            for (auto* declarator : netDecl.declarators) {
+                // The declarator name is driven by the initializer (if any)
+                std::string net_name(declarator->name.valueText());
+                if (!net_name.empty() && declarator->initializer) {
+                    // The net itself is driven internally
+                    info.assign_driven.insert(net_name);
+
+                    // Extract signals from the initializer expression - these are consumed
+                    auto init_signals = extractIdentifiersFromSyntax(*declarator->initializer);
+                    for (const auto& sig : init_signals) {
+                        // Don't add the net name itself as consumed
+                        if (sig != net_name) {
+                            info.assign_consumed.insert(sig);
+                        }
+                    }
+                }
+            }
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Data declarations with inline initializers (logic/reg with assignment)
+        // e.g., logic unused_ok = &{1'b0, sig_a};
+        // ─────────────────────────────────────────────────────────────────────
+        if (member->kind == SyntaxKind::DataDeclaration) {
+            auto& dataDecl = member->as<DataDeclarationSyntax>();
+            for (auto* declarator : dataDecl.declarators) {
+                std::string var_name(declarator->name.valueText());
+                if (!var_name.empty() && declarator->initializer) {
+                    // The variable itself is driven internally
+                    info.assign_driven.insert(var_name);
+
+                    // Extract signals from the initializer expression - these are consumed
+                    auto init_signals = extractIdentifiersFromSyntax(*declarator->initializer);
+                    for (const auto& sig : init_signals) {
+                        if (sig != var_name) {
+                            info.assign_consumed.insert(sig);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
