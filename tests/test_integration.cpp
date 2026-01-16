@@ -1866,3 +1866,154 @@ TEST_CASE("Integration - assign RHS signals should NOT become output AUTOPORTS",
     CHECK(autologic_section.find("sig_a") != std::string::npos);
     CHECK(autologic_section.find("sig_b") != std::string::npos);
 }
+
+// =============================================================================
+// Packed Array Tests
+// =============================================================================
+
+TEST_CASE("Integration - packed arrays preserved with resolved-ranges", "[integration][packed_array]") {
+    // With resolved-ranges, packed arrays should preserve their multi-dimensional
+    // structure (e.g., [3:0][7:0]) and NOT be squashed to a flat width (e.g., [31:0])
+    auto top_sv = getFixturePath("packed_array_resolved/top.sv");
+    auto lib_dir = getFixturePath("packed_array_resolved/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool::Options opts;
+    opts.resolved_ranges = true;
+    AutosTool tool(opts);
+
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    REQUIRE(result.success);
+
+    // AUTOPORTS should have [3:0][7:0] NOT [31:0]
+    CHECK(result.modified_content.find("[3:0][7:0]") != std::string::npos);
+    CHECK(result.modified_content.find("[31:0]") == std::string::npos);
+}
+
+// =============================================================================
+// Unpacked Array Tests
+// =============================================================================
+
+TEST_CASE("Integration - unpacked arrays preserve dimensions after signal name", "[integration][unpacked_array]") {
+    // Unpacked arrays like "logic [7:0] data [3:0]" should preserve the [3:0]
+    // dimension after the signal name in both AUTOPORTS and AUTOLOGIC
+    auto top_sv = getFixturePath("unpacked_array/top.sv");
+    auto lib_dir = getFixturePath("unpacked_array/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    REQUIRE(result.success);
+
+    // AUTOPORTS should have unpacked array dimensions: "name [3:0]"
+    // Check for the pattern: signal name followed by unpacked dimension
+    CHECK(result.modified_content.find("unpacked_data_in [3:0]") != std::string::npos);
+    CHECK(result.modified_content.find("unpacked_data_out [3:0]") != std::string::npos);
+}
+
+// =============================================================================
+// Inline Wire/Logic Declaration Tests
+// =============================================================================
+
+TEST_CASE("Integration - inline wire declarations consume signals internally", "[integration][inline_decl]") {
+    // Signals used in inline wire declarations like "wire foo = &{1'b0, sig_a};"
+    // should be detected as consumed internally and NOT appear as output ports.
+    auto top_sv = getFixturePath("inline_wire_decl/top.sv");
+    auto lib_dir = getFixturePath("inline_wire_decl/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    REQUIRE(result.success);
+
+    // AUTOPORTS should NOT contain sig_a (consumed by inline wire declaration)
+    auto autoports_start = result.modified_content.find("/*AUTOPORTS*/");
+    auto autoports_end = result.modified_content.find(");", autoports_start);
+    std::string autoports_section = result.modified_content.substr(autoports_start, autoports_end - autoports_start);
+
+    CHECK(autoports_section.find("sig_a") == std::string::npos);
+
+    // sig_b should still be in AUTOPORTS (not consumed)
+    CHECK(autoports_section.find("sig_b") != std::string::npos);
+
+    // AUTOLOGIC should contain sig_a (it's an internal wire now)
+    auto autologic_start = result.modified_content.find("/*AUTOLOGIC*/");
+    auto autologic_end = result.modified_content.find("// End of automatics", autologic_start);
+    std::string autologic_section = result.modified_content.substr(autologic_start, autologic_end - autologic_start);
+
+    CHECK(autologic_section.find("sig_a") != std::string::npos);
+}
+
+// =============================================================================
+// Hierarchy Depth Tests
+// =============================================================================
+
+TEST_CASE("Integration - grandchild errors should not block top expansion", "[integration][hierarchy_depth]") {
+    // Test hierarchy: top -> child -> grandchild
+    // grandchild has a missing include file, but this should NOT block
+    // expansion of top, since we only need child's port information.
+    auto top_sv = getFixturePath("hierarchy_depth/top.sv");
+    auto lib_dir = getFixturePath("hierarchy_depth/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+
+    // Expansion should succeed despite grandchild having missing include
+    REQUIRE(result.success);
+    CHECK(result.autoinst_count == 1);
+    CHECK(result.autoports_count == 1);
+
+    // AUTOINST should have connected child's ports
+    CHECK(result.modified_content.find(".data_in") != std::string::npos);
+    CHECK(result.modified_content.find(".data_out") != std::string::npos);
+    CHECK(result.modified_content.find(".clk") != std::string::npos);
+
+    // AUTOPORTS should have the child's ports
+    auto autoports_start = result.modified_content.find("/*AUTOPORTS*/");
+    auto autoports_end = result.modified_content.find(");", autoports_start);
+    std::string autoports_section = result.modified_content.substr(autoports_start, autoports_end - autoports_start);
+
+    CHECK(autoports_section.find("data_in") != std::string::npos);
+    CHECK(autoports_section.find("data_out") != std::string::npos);
+}

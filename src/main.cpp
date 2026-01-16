@@ -28,6 +28,160 @@ static bool isValidExtension(const fs::path& path) {
     return ext == ".v" || ext == ".sv" || ext == ".vh" || ext == ".svh";
 }
 
+/// Strip all AUTO expansion blocks from source text, leaving only markers.
+/// This is used by --clean mode to remove stale expansions before re-running.
+///
+/// Handles:
+/// - AUTOLOGIC: removes from "// Beginning of automatic logic" to "// End of automatics"
+/// - AUTOPORTS: removes everything between /*AUTOPORTS*/ and the closing )
+/// - AUTOINST: removes everything between /*AUTOINST*/ and the closing )
+///
+/// Returns the cleaned source text.
+static std::string stripAutoExpansions(const std::string& source) {
+    std::string result;
+    result.reserve(source.size());
+
+    size_t pos = 0;
+    while (pos < source.size()) {
+        // Look for markers
+        size_t autoinst_pos = source.find("/*AUTOINST*/", pos);
+        size_t autoports_pos = source.find("/*AUTOPORTS*/", pos);
+        size_t begin_auto_pos = source.find("// Beginning of automatic", pos);
+
+        // Find the nearest marker
+        size_t next_marker = std::min({autoinst_pos, autoports_pos, begin_auto_pos});
+
+        if (next_marker == std::string::npos) {
+            // No more markers, copy rest of file
+            result.append(source, pos, source.size() - pos);
+            break;
+        }
+
+        // Copy everything up to the marker
+        result.append(source, pos, next_marker - pos);
+
+        if (next_marker == autoinst_pos) {
+            // Handle AUTOINST: keep the marker, remove content until )
+            result.append("/*AUTOINST*/");
+            pos = autoinst_pos + 12;  // strlen("/*AUTOINST*/")
+
+            // Find the closing ) - need to handle nested parens
+            int paren_depth = 0;
+            bool in_string = false;
+            bool in_line_comment = false;
+            bool in_block_comment = false;
+            size_t close_pos = pos;
+
+            while (close_pos < source.size()) {
+                char c = source[close_pos];
+                char next = (close_pos + 1 < source.size()) ? source[close_pos + 1] : '\0';
+
+                if (in_line_comment) {
+                    if (c == '\n') in_line_comment = false;
+                } else if (in_block_comment) {
+                    if (c == '*' && next == '/') {
+                        in_block_comment = false;
+                        close_pos++;
+                    }
+                } else if (in_string) {
+                    if (c == '"' && (close_pos == 0 || source[close_pos-1] != '\\')) {
+                        in_string = false;
+                    }
+                } else {
+                    if (c == '/' && next == '/') {
+                        in_line_comment = true;
+                        close_pos++;
+                    } else if (c == '/' && next == '*') {
+                        in_block_comment = true;
+                        close_pos++;
+                    } else if (c == '"') {
+                        in_string = true;
+                    } else if (c == '(') {
+                        paren_depth++;
+                    } else if (c == ')') {
+                        if (paren_depth == 0) {
+                            // Found the closing paren
+                            break;
+                        }
+                        paren_depth--;
+                    }
+                }
+                close_pos++;
+            }
+
+            // Skip to the closing paren (but don't include it - it's part of the instance)
+            pos = close_pos;
+
+        } else if (next_marker == autoports_pos) {
+            // Handle AUTOPORTS: keep the marker, remove content until )
+            // AUTOPORTS is in module header: module foo ( ... /*AUTOPORTS*/ ... );
+            result.append("/*AUTOPORTS*/");
+            pos = autoports_pos + 13;  // strlen("/*AUTOPORTS*/")
+
+            // Find the closing ) of the port list
+            int paren_depth = 0;
+            bool in_string = false;
+            bool in_line_comment = false;
+            bool in_block_comment = false;
+            size_t close_pos = pos;
+
+            while (close_pos < source.size()) {
+                char c = source[close_pos];
+                char next = (close_pos + 1 < source.size()) ? source[close_pos + 1] : '\0';
+
+                if (in_line_comment) {
+                    if (c == '\n') in_line_comment = false;
+                } else if (in_block_comment) {
+                    if (c == '*' && next == '/') {
+                        in_block_comment = false;
+                        close_pos++;
+                    }
+                } else if (in_string) {
+                    if (c == '"' && (close_pos == 0 || source[close_pos-1] != '\\')) {
+                        in_string = false;
+                    }
+                } else {
+                    if (c == '/' && next == '/') {
+                        in_line_comment = true;
+                        close_pos++;
+                    } else if (c == '/' && next == '*') {
+                        in_block_comment = true;
+                        close_pos++;
+                    } else if (c == '"') {
+                        in_string = true;
+                    } else if (c == '(') {
+                        paren_depth++;
+                    } else if (c == ')') {
+                        if (paren_depth == 0) {
+                            // Found the closing paren of the port list
+                            break;
+                        }
+                        paren_depth--;
+                    }
+                }
+                close_pos++;
+            }
+
+            // Skip to the closing paren (but don't include it)
+            pos = close_pos;
+
+        } else {
+            // Handle AUTOLOGIC block: remove from "// Beginning" to "// End of automatics"
+            size_t end_pos = source.find("// End of automatics", next_marker);
+            if (end_pos != std::string::npos) {
+                // Skip past the end marker
+                pos = end_pos + 20;  // strlen("// End of automatics")
+            } else {
+                // No end marker found - just copy the beginning marker and continue
+                result.append(source, next_marker, 25);  // "// Beginning of automatic"
+                pos = next_marker + 25;
+            }
+        }
+    }
+
+    return result;
+}
+
 int main(int argc, char* argv[]) {
     Driver driver;
     driver.addStandardArgs();
@@ -78,9 +232,11 @@ int main(int argc, char* argv[]) {
     std::optional<bool> dryRun;
     std::optional<bool> diffMode;
     std::optional<bool> checkMode;
+    std::optional<bool> cleanMode;
     driver.cmdLine.add("--dry-run", dryRun, "Show changes without modifying files");
     driver.cmdLine.add("--diff", diffMode, "Output unified diff instead of modifying");
     driver.cmdLine.add("--check", checkMode, "Check if files need changes (exit 1 if changes needed, for CI)");
+    driver.cmdLine.add("--clean", cleanMode, "Remove all AUTO expansion blocks, leaving only markers");
 
     // Strictness
     std::optional<bool> strictMode;
@@ -131,6 +287,13 @@ int main(int argc, char* argv[]) {
 
     // Always ignore unknown modules - we don't need leaf cells elaborated
     driver.options.compilationFlags[ast::CompilationFlags::IgnoreUnknownModules] = true;
+
+    // Suppress include file errors at the slang level.
+    // We only care about include errors in the top module and direct children.
+    // Grandchildren with missing includes should not block expansion.
+    // We'll check for critical include errors per-file in the expansion loop.
+    driver.diagEngine.setSeverity(slang::diag::CouldNotOpenIncludeFile,
+                                  slang::DiagnosticSeverity::Warning);
 
     // ========================================================================
     // Load configuration file (.slang-autos.toml)
@@ -198,6 +361,7 @@ int main(int argc, char* argv[]) {
     DiagnosticCollector prescan_diagnostics;
     std::unordered_map<std::string, InlineConfig> inline_configs;
 
+    // Scan files to expand for inline configs
     for (const auto& path : filesToExpand) {
         std::ifstream file(path);
         if (!file) continue;
@@ -239,6 +403,63 @@ int main(int argc, char* argv[]) {
     }
 
     // ========================================================================
+    // Clean mode: strip AUTO expansions and exit (no slang compilation needed)
+    // ========================================================================
+
+    if (cleanMode.value_or(false)) {
+        int files_cleaned = 0;
+
+        for (const auto& path : filesToExpand) {
+            std::ifstream ifs(path);
+            if (!ifs) {
+                OS::printE(fmt::format("error: Failed to open file: {}\n", path.string()));
+                continue;
+            }
+
+            std::stringstream buffer;
+            buffer << ifs.rdbuf();
+            std::string original = buffer.str();
+            ifs.close();
+
+            std::string cleaned = stripAutoExpansions(original);
+
+            if (cleaned != original) {
+                if (dryRun.value_or(false) || diffMode.value_or(false)) {
+                    if (diffMode.value_or(false)) {
+                        // Generate diff output
+                        OS::print(fmt::format("--- {}\n+++ {}\n", path.string(), path.string()));
+                        // Simple diff: show that content changed
+                        OS::print("@@ cleaned AUTO expansion blocks @@\n");
+                    }
+                    OS::print(fmt::format("Would clean: {}\n", path.string()));
+                } else {
+                    std::ofstream ofs(path);
+                    if (!ofs) {
+                        OS::printE(fmt::format("error: Failed to write file: {}\n", path.string()));
+                        continue;
+                    }
+                    ofs << cleaned;
+                    ofs.close();
+                    ++files_cleaned;
+                    if (verbosity >= 1) {
+                        OS::print(fmt::format("Cleaned: {}\n", path.string()));
+                    }
+                }
+            } else {
+                if (verbosity >= 2) {
+                    OS::print(fmt::format("No expansions to clean: {}\n", path.string()));
+                }
+            }
+        }
+
+        if (verbosity >= 1 && !dryRun.value_or(false)) {
+            OS::print(fmt::format("Cleaned {} file(s)\n", files_cleaned));
+        }
+
+        return 0;
+    }
+
+    // ========================================================================
     // Parse all sources (syntax trees are reused across compilations)
     // ========================================================================
 
@@ -272,27 +493,65 @@ int main(int argc, char* argv[]) {
         auto compilation = driver.createCompilation();
 
         // Process slang diagnostics
-        // Note: slang-autos is lenient - only InvalidTopModule prevents expansion.
-        // Other slang errors (timescale, elaboration issues, etc.) don't block
-        // expansion since slang-autos only needs the module ports to be parseable.
+        // Critical errors that prevent correct expansion:
+        // - InvalidTopModule: module name doesn't match filename
+        // - CouldNotOpenIncludeFile: missing include file (macros won't be defined)
+        // - UnknownDirective: undefined macro (will cause garbage output)
+        //
+        // Since we only add top + direct children to slang (not grandchildren),
+        // these errors will only occur in files we care about.
         {
             auto& diags = compilation->getAllDiagnostics();
             bool hasInvalidTop = false;
+            bool hasCriticalError = false;
+            std::vector<std::string> criticalMessages;
+
+            // Get canonical path for comparison
+            fs::path canonical_top = fs::canonical(path);
 
             for (const auto& d : diags) {
                 if (d.code == slang::diag::InvalidTopModule) {
                     hasInvalidTop = true;
+                    hasCriticalError = true;
+                }
+                // Check for missing include files - only critical if in top file
+                // Grandchildren with missing includes should not block expansion
+                else if (d.code == slang::diag::CouldNotOpenIncludeFile) {
+                    auto error_file = driver.sourceManager.getFileName(d.location);
+                    bool in_top = false;
+                    if (!error_file.empty()) {
+                        try {
+                            in_top = (fs::canonical(std::string(error_file)) == canonical_top);
+                        } catch (...) {}
+                    }
+                    if (in_top) {
+                        hasCriticalError = true;
+                        criticalMessages.push_back("Missing include file - macros may be undefined");
+                    }
+                }
+                // Check for unknown directives (undefined macros) - only critical if in top file
+                else if (d.code == slang::diag::UnknownDirective) {
+                    auto error_file = driver.sourceManager.getFileName(d.location);
+                    bool in_top = false;
+                    if (!error_file.empty()) {
+                        try {
+                            in_top = (fs::canonical(std::string(error_file)) == canonical_top);
+                        } catch (...) {}
+                    }
+                    if (in_top) {
+                        hasCriticalError = true;
+                        criticalMessages.push_back("Undefined macro or directive");
+                    }
                 }
             }
 
-            // Only show slang diagnostics in verbose mode
-            if (verbosity >= 2 && !diags.empty()) {
+            // Always show critical slang diagnostics, verbose mode shows all
+            if (hasCriticalError || (verbosity >= 2 && !diags.empty())) {
                 OS::printE(slang::DiagnosticEngine::reportAll(
                     driver.sourceManager, diags));
             }
 
-            // Special handling for InvalidTopModule - this is a hard error
-            // (module name must match filename for slang-autos to work)
+            // Special handling for InvalidTopModule
             if (hasInvalidTop) {
                 any_errors = true;
                 OS::printE(fmt::format(
@@ -302,8 +561,20 @@ int main(int argc, char* argv[]) {
                 continue;
             }
 
-            // For all other slang errors: proceed with expansion
-            // If the error actually prevents expansion, tool.expandFile() will fail
+            // Block expansion on critical preprocessing errors
+            // These will cause garbage output if we proceed
+            if (hasCriticalError) {
+                any_errors = true;
+                OS::printE(fmt::format(
+                    "error: Cannot expand '{}' due to preprocessing errors.\n"
+                    "       Check that all include directories are specified with -I or +incdir+\n"
+                    "       and that all required macros are defined with +define+.\n",
+                    path.string()));
+                continue;
+            }
+
+            // For other slang errors (timescale, elaboration, etc.): proceed with expansion
+            // These typically don't affect port parsing
         }
 
         // Expand autos in this file
