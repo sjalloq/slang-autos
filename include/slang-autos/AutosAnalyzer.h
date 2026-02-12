@@ -139,6 +139,9 @@ private:
 
     void processModule(const slang::syntax::ModuleDeclarationSyntax& module);
     CollectedInfo collectModuleInfo(const slang::syntax::ModuleDeclarationSyntax& module);
+    void processMemberRecursive(const slang::syntax::MemberSyntax* member,
+                                CollectedInfo& info,
+                                bool& in_autologic_block);
     void resolvePortsAndSignals(const slang::syntax::ModuleDeclarationSyntax& module,
                                 CollectedInfo& info);
     void generateReplacements(const slang::syntax::ModuleDeclarationSyntax& module,

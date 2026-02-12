@@ -74,231 +74,309 @@ void AutosAnalyzer::processModule(const ModuleDeclarationSyntax& module) {
 // Phase 1: Collection - all positions from AST
 // ════════════════════════════════════════════════════════════════════════════
 
+// Helper to recursively process a single member for AUTOINST/AUTOLOGIC markers.
+// This allows AUTOINST to work inside generate blocks.
+void AutosAnalyzer::processMemberRecursive(
+    const MemberSyntax* member,
+    CollectedInfo& info,
+    bool& in_autologic_block) {
+
+    if (!member) return;
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Recursively process generate constructs
+    // ─────────────────────────────────────────────────────────────────────────
+    if (member->kind == SyntaxKind::GenerateRegion) {
+        auto& region = member->as<GenerateRegionSyntax>();
+        for (auto* child : region.members) {
+            processMemberRecursive(child, info, in_autologic_block);
+        }
+        return;
+    }
+
+    if (member->kind == SyntaxKind::GenerateBlock) {
+        auto& block = member->as<GenerateBlockSyntax>();
+        for (auto* child : block.members) {
+            processMemberRecursive(child, info, in_autologic_block);
+        }
+        return;
+    }
+
+    if (member->kind == SyntaxKind::LoopGenerate) {
+        auto& loop = member->as<LoopGenerateSyntax>();
+        processMemberRecursive(loop.block, info, in_autologic_block);
+        return;
+    }
+
+    if (member->kind == SyntaxKind::IfGenerate) {
+        auto& ifGen = member->as<IfGenerateSyntax>();
+        processMemberRecursive(ifGen.block, info, in_autologic_block);
+        if (ifGen.elseClause) {
+            // elseClause->clause is a not_null<SyntaxNode*>, get the underlying pointer
+            const SyntaxNode* clause = ifGen.elseClause->clause.get();
+            if (clause->kind == SyntaxKind::GenerateBlock ||
+                clause->kind == SyntaxKind::GenerateRegion ||
+                clause->kind == SyntaxKind::HierarchyInstantiation ||
+                clause->kind == SyntaxKind::IfGenerate ||
+                clause->kind == SyntaxKind::CaseGenerate ||
+                clause->kind == SyntaxKind::LoopGenerate) {
+                processMemberRecursive(static_cast<const MemberSyntax*>(clause), info, in_autologic_block);
+            }
+        }
+        return;
+    }
+
+    if (member->kind == SyntaxKind::CaseGenerate) {
+        auto& caseGen = member->as<CaseGenerateSyntax>();
+        for (auto* item : caseGen.items) {
+            const SyntaxNode* clause = nullptr;
+            if (item->kind == SyntaxKind::StandardCaseItem) {
+                // clause is a not_null<SyntaxNode*>, get the underlying pointer
+                clause = item->as<StandardCaseItemSyntax>().clause.get();
+            } else if (item->kind == SyntaxKind::DefaultCaseItem) {
+                clause = item->as<DefaultCaseItemSyntax>().clause.get();
+            }
+            if (clause &&
+                (clause->kind == SyntaxKind::GenerateBlock ||
+                 clause->kind == SyntaxKind::GenerateRegion ||
+                 clause->kind == SyntaxKind::HierarchyInstantiation ||
+                 clause->kind == SyntaxKind::IfGenerate ||
+                 clause->kind == SyntaxKind::CaseGenerate ||
+                 clause->kind == SyntaxKind::LoopGenerate)) {
+                processMemberRecursive(static_cast<const MemberSyntax*>(clause), info, in_autologic_block);
+            }
+        }
+        return;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // AUTOINST - find marker in port list, get close paren position
+    // ─────────────────────────────────────────────────────────────────────────
+    if (hasMarker(*member, std::string(markers::AUTOINST))) {
+        AutoInstInfo inst_info;
+        inst_info.node = member;
+
+        if (auto inst = extractInstanceInfo(*member)) {
+            inst_info.module_type = inst->first;
+            inst_info.instance_name = inst->second;
+
+            // Get line number of instance for template lookup
+            // (verilog-mode uses closest preceding template)
+            auto& hier = member->as<HierarchyInstantiationSyntax>();
+            size_t inst_offset = hier.type.location().offset();
+            size_t inst_line = 1;
+            for (size_t i = 0; i < inst_offset && i < source_content_.size(); ++i) {
+                if (source_content_[i] == '\n') ++inst_line;
+            }
+            inst_info.templ = findTemplate(inst_info.module_type, inst_line);
+
+            // Get positions from AST
+            // HierarchyInstantiationSyntax has: type, parameters, instances, semi
+            // HierarchicalInstanceSyntax has: decl, openParen, connections, closeParen
+            if (!hier.instances.empty()) {
+                auto& first_inst = *hier.instances[0];
+
+                // Close paren position from AST
+                inst_info.close_paren_pos = first_inst.closeParen.location().offset();
+
+                // Find AUTOINST marker in the instance (port list area)
+                if (auto pos = findMarkerInNode(first_inst, markers::AUTOINST)) {
+                    inst_info.marker_end = pos->second;
+                }
+
+                // Collect manual ports (before the marker)
+                for (auto* conn : first_inst.connections) {
+                    // Check if we've hit the marker
+                    if (auto tok = conn->getFirstToken(); tok.valid()) {
+                        if (hasMarkerInTokenTrivia(tok, std::string(markers::AUTOINST))) {
+                            break;  // Stop collecting manual ports
+                        }
+                    }
+                    // Extract port name from .port(signal) syntax
+                    if (conn->kind == SyntaxKind::NamedPortConnection) {
+                        auto& named = conn->as<NamedPortConnectionSyntax>();
+                        inst_info.manual_ports.insert(std::string(named.name.valueText()));
+                    }
+                }
+            }
+
+            if (inst_info.marker_end > 0 && inst_info.close_paren_pos > 0) {
+                info.autoinsts.push_back(inst_info);
+            }
+        }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+    // Manual instances (no AUTOINST) - collect for signal direction tracking
+    // ─────────────────────────────────────────────────────────────────────────
+    else if (member->kind == SyntaxKind::HierarchyInstantiation) {
+        auto& hier = member->as<HierarchyInstantiationSyntax>();
+        if (!hier.instances.empty()) {
+            ManualInstInfo manual_info;
+            manual_info.node = &hier;
+            manual_info.module_type = std::string(hier.type.valueText());
+
+            auto& first_inst = *hier.instances[0];
+            if (first_inst.decl) {
+                manual_info.instance_name = std::string(first_inst.decl->name.valueText());
+            }
+
+            // Extract port connections directly from AST
+            for (auto* conn : first_inst.connections) {
+                if (conn->kind == SyntaxKind::NamedPortConnection) {
+                    auto& named = conn->as<NamedPortConnectionSyntax>();
+                    std::string port_name = std::string(named.name.valueText());
+
+                    if (!port_name.empty()) {
+                        CollectedPortConnection port_conn;
+                        port_conn.port_name = port_name;
+
+                        if (named.expr) {
+                            // Keep string form for output generation
+                            port_conn.signal_expr = named.expr->toString();
+                            // Extract identifiers directly from AST - no re-parsing needed
+                            port_conn.signal_identifiers = extractIdentifiersFromSyntax(*named.expr);
+                        }
+
+                        manual_info.port_connections.push_back(std::move(port_conn));
+                    }
+                }
+            }
+
+            if (!manual_info.instance_name.empty()) {
+                info.manual_insts.push_back(manual_info);
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // AUTOLOGIC marker - position from trivia
+    // ─────────────────────────────────────────────────────────────────────────
+    if (auto tok = member->getFirstToken(); tok.valid()) {
+        if (auto pos = findMarkerInTrivia(tok, markers::AUTOLOGIC)) {
+            info.has_autologic = true;
+            info.autologic.marker_end = pos->second;
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // AUTOLOGIC existing block - positions from AST
+    // Use precise marker positions, not member sourceRange, because
+    // END_AUTOMATICS may be trivia on the NEXT member (which we don't want to delete)
+    // ─────────────────────────────────────────────────────────────────────────
+    if (auto pos = findMarkerInNode(*member, markers::BEGIN_AUTOLOGIC)) {
+        in_autologic_block = true;
+        info.autologic.has_existing_block = true;
+        // Find start of line containing the marker
+        info.autologic.block_start = pos->first;
+    }
+
+    if (in_autologic_block) {
+        if (auto pos = findMarkerInNode(*member, markers::END_AUTOMATICS)) {
+            in_autologic_block = false;
+            // End position is after the marker
+            info.autologic.block_end = pos->second;
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // User declarations
+    // ─────────────────────────────────────────────────────────────────────────
+    if (!in_autologic_block) {
+        if (auto name = extractDeclarationName(*member)) {
+            info.existing_decls.insert(*name);
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Continuous assign statements - track both LHS and RHS signals
+    // LHS signals are driven internally (should not become input ports)
+    // RHS signals are consumed internally (should not become output ports)
+    // e.g., assign sys2aux_sync = {sig_a, sig_b};
+    //   - sys2aux_sync is LHS (driven internally)
+    //   - sig_a, sig_b are RHS (consumed internally)
+    // ─────────────────────────────────────────────────────────────────────────
+    if (member->kind == SyntaxKind::ContinuousAssign) {
+        auto& assign = member->as<ContinuousAssignSyntax>();
+        for (auto* expr : assign.assignments) {
+            // Each assignment is an AssignmentExpression (which is a BinaryExpressionSyntax)
+            if (expr->kind == SyntaxKind::AssignmentExpression) {
+                auto& binary = expr->as<BinaryExpressionSyntax>();
+
+                // Extract all identifiers from LHS - these are driven internally
+                auto lhs_signals = extractIdentifiersFromSyntax(*binary.left);
+                for (const auto& sig : lhs_signals) {
+                    info.assign_driven.insert(sig);
+                }
+
+                // Extract all identifiers from RHS - these are consumed internally
+                // This prevents instance outputs that feed into assign from becoming
+                // external output ports (they're consumed locally)
+                auto rhs_signals = extractIdentifiersFromSyntax(*binary.right);
+                for (const auto& sig : rhs_signals) {
+                    info.assign_consumed.insert(sig);
+                }
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Net declarations with inline initializers
+    // e.g., wire unused_ok = &{1'b0, sig_a};
+    // The net name (unused_ok) is driven internally
+    // The signals in the initializer (sig_a) are consumed internally
+    // ─────────────────────────────────────────────────────────────────────────
+    if (member->kind == SyntaxKind::NetDeclaration) {
+        auto& netDecl = member->as<NetDeclarationSyntax>();
+        for (auto* declarator : netDecl.declarators) {
+            // The declarator name is driven by the initializer (if any)
+            std::string net_name(declarator->name.valueText());
+            if (!net_name.empty() && declarator->initializer) {
+                // The net itself is driven internally
+                info.assign_driven.insert(net_name);
+
+                // Extract signals from the initializer expression - these are consumed
+                auto init_signals = extractIdentifiersFromSyntax(*declarator->initializer);
+                for (const auto& sig : init_signals) {
+                    // Don't add the net name itself as consumed
+                    if (sig != net_name) {
+                        info.assign_consumed.insert(sig);
+                    }
+                }
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Data declarations with inline initializers (logic/reg with assignment)
+    // e.g., logic unused_ok = &{1'b0, sig_a};
+    // ─────────────────────────────────────────────────────────────────────────
+    if (member->kind == SyntaxKind::DataDeclaration) {
+        auto& dataDecl = member->as<DataDeclarationSyntax>();
+        for (auto* declarator : dataDecl.declarators) {
+            std::string var_name(declarator->name.valueText());
+            if (!var_name.empty() && declarator->initializer) {
+                // The variable itself is driven internally
+                info.assign_driven.insert(var_name);
+
+                // Extract signals from the initializer expression - these are consumed
+                auto init_signals = extractIdentifiersFromSyntax(*declarator->initializer);
+                for (const auto& sig : init_signals) {
+                    if (sig != var_name) {
+                        info.assign_consumed.insert(sig);
+                    }
+                }
+            }
+        }
+    }
+}
+
 AutosAnalyzer::CollectedInfo
 AutosAnalyzer::collectModuleInfo(const ModuleDeclarationSyntax& module) {
     CollectedInfo info;
     bool in_autologic_block = false;
 
     for (auto* member : module.members) {
-        // ─────────────────────────────────────────────────────────────────────
-        // AUTOINST - find marker in port list, get close paren position
-        // ─────────────────────────────────────────────────────────────────────
-        if (hasMarker(*member, std::string(markers::AUTOINST))) {
-            AutoInstInfo inst_info;
-            inst_info.node = member;
-
-            if (auto inst = extractInstanceInfo(*member)) {
-                inst_info.module_type = inst->first;
-                inst_info.instance_name = inst->second;
-
-                // Get line number of instance for template lookup
-                // (verilog-mode uses closest preceding template)
-                auto& hier = member->as<HierarchyInstantiationSyntax>();
-                size_t inst_offset = hier.type.location().offset();
-                size_t inst_line = 1;
-                for (size_t i = 0; i < inst_offset && i < source_content_.size(); ++i) {
-                    if (source_content_[i] == '\n') ++inst_line;
-                }
-                inst_info.templ = findTemplate(inst_info.module_type, inst_line);
-
-                // Get positions from AST
-                // HierarchyInstantiationSyntax has: type, parameters, instances, semi
-                // HierarchicalInstanceSyntax has: decl, openParen, connections, closeParen
-                if (!hier.instances.empty()) {
-                    auto& first_inst = *hier.instances[0];
-
-                    // Close paren position from AST
-                    inst_info.close_paren_pos = first_inst.closeParen.location().offset();
-
-                    // Find AUTOINST marker in the instance (port list area)
-                    if (auto pos = findMarkerInNode(first_inst, markers::AUTOINST)) {
-                        inst_info.marker_end = pos->second;
-                    }
-
-                    // Collect manual ports (before the marker)
-                    for (auto* conn : first_inst.connections) {
-                        // Check if we've hit the marker
-                        if (auto tok = conn->getFirstToken(); tok.valid()) {
-                            if (hasMarkerInTokenTrivia(tok, std::string(markers::AUTOINST))) {
-                                break;  // Stop collecting manual ports
-                            }
-                        }
-                        // Extract port name from .port(signal) syntax
-                        if (conn->kind == SyntaxKind::NamedPortConnection) {
-                            auto& named = conn->as<NamedPortConnectionSyntax>();
-                            inst_info.manual_ports.insert(std::string(named.name.valueText()));
-                        }
-                    }
-                }
-
-                if (inst_info.marker_end > 0 && inst_info.close_paren_pos > 0) {
-                    info.autoinsts.push_back(inst_info);
-                }
-            }
-        }
-        // ─────────────────────────────────────────────────────────────────────
-        // Manual instances (no AUTOINST) - collect for signal direction tracking
-        // ─────────────────────────────────────────────────────────────────────
-        else if (member->kind == SyntaxKind::HierarchyInstantiation) {
-            auto& hier = member->as<HierarchyInstantiationSyntax>();
-            if (!hier.instances.empty()) {
-                ManualInstInfo manual_info;
-                manual_info.node = &hier;
-                manual_info.module_type = std::string(hier.type.valueText());
-
-                auto& first_inst = *hier.instances[0];
-                if (first_inst.decl) {
-                    manual_info.instance_name = std::string(first_inst.decl->name.valueText());
-                }
-
-                // Extract port connections directly from AST
-                for (auto* conn : first_inst.connections) {
-                    if (conn->kind == SyntaxKind::NamedPortConnection) {
-                        auto& named = conn->as<NamedPortConnectionSyntax>();
-                        std::string port_name = std::string(named.name.valueText());
-
-                        if (!port_name.empty()) {
-                            CollectedPortConnection port_conn;
-                            port_conn.port_name = port_name;
-
-                            if (named.expr) {
-                                // Keep string form for output generation
-                                port_conn.signal_expr = named.expr->toString();
-                                // Extract identifiers directly from AST - no re-parsing needed
-                                port_conn.signal_identifiers = extractIdentifiersFromSyntax(*named.expr);
-                            }
-
-                            manual_info.port_connections.push_back(std::move(port_conn));
-                        }
-                    }
-                }
-
-                if (!manual_info.instance_name.empty()) {
-                    info.manual_insts.push_back(manual_info);
-                }
-            }
-        }
-
-        // ─────────────────────────────────────────────────────────────────────
-        // AUTOLOGIC marker - position from trivia
-        // ─────────────────────────────────────────────────────────────────────
-        if (auto tok = member->getFirstToken(); tok.valid()) {
-            if (auto pos = findMarkerInTrivia(tok, markers::AUTOLOGIC)) {
-                info.has_autologic = true;
-                info.autologic.marker_end = pos->second;
-            }
-        }
-
-        // ─────────────────────────────────────────────────────────────────────
-        // AUTOLOGIC existing block - positions from AST
-        // Use precise marker positions, not member sourceRange, because
-        // END_AUTOMATICS may be trivia on the NEXT member (which we don't want to delete)
-        // ─────────────────────────────────────────────────────────────────────
-        if (auto pos = findMarkerInNode(*member, markers::BEGIN_AUTOLOGIC)) {
-            in_autologic_block = true;
-            info.autologic.has_existing_block = true;
-            // Find start of line containing the marker
-            info.autologic.block_start = pos->first;
-        }
-
-        if (in_autologic_block) {
-            if (auto pos = findMarkerInNode(*member, markers::END_AUTOMATICS)) {
-                in_autologic_block = false;
-                // End position is after the marker
-                info.autologic.block_end = pos->second;
-            }
-        }
-
-        // ─────────────────────────────────────────────────────────────────────
-        // User declarations
-        // ─────────────────────────────────────────────────────────────────────
-        if (!in_autologic_block) {
-            if (auto name = extractDeclarationName(*member)) {
-                info.existing_decls.insert(*name);
-            }
-        }
-
-        // ─────────────────────────────────────────────────────────────────────
-        // Continuous assign statements - track both LHS and RHS signals
-        // LHS signals are driven internally (should not become input ports)
-        // RHS signals are consumed internally (should not become output ports)
-        // e.g., assign sys2aux_sync = {sig_a, sig_b};
-        //   - sys2aux_sync is LHS (driven internally)
-        //   - sig_a, sig_b are RHS (consumed internally)
-        // ─────────────────────────────────────────────────────────────────────
-        if (member->kind == SyntaxKind::ContinuousAssign) {
-            auto& assign = member->as<ContinuousAssignSyntax>();
-            for (auto* expr : assign.assignments) {
-                // Each assignment is an AssignmentExpression (which is a BinaryExpressionSyntax)
-                if (expr->kind == SyntaxKind::AssignmentExpression) {
-                    auto& binary = expr->as<BinaryExpressionSyntax>();
-
-                    // Extract all identifiers from LHS - these are driven internally
-                    auto lhs_signals = extractIdentifiersFromSyntax(*binary.left);
-                    for (const auto& sig : lhs_signals) {
-                        info.assign_driven.insert(sig);
-                    }
-
-                    // Extract all identifiers from RHS - these are consumed internally
-                    // This prevents instance outputs that feed into assign from becoming
-                    // external output ports (they're consumed locally)
-                    auto rhs_signals = extractIdentifiersFromSyntax(*binary.right);
-                    for (const auto& sig : rhs_signals) {
-                        info.assign_consumed.insert(sig);
-                    }
-                }
-            }
-        }
-
-        // ─────────────────────────────────────────────────────────────────────
-        // Net declarations with inline initializers
-        // e.g., wire unused_ok = &{1'b0, sig_a};
-        // The net name (unused_ok) is driven internally
-        // The signals in the initializer (sig_a) are consumed internally
-        // ─────────────────────────────────────────────────────────────────────
-        if (member->kind == SyntaxKind::NetDeclaration) {
-            auto& netDecl = member->as<NetDeclarationSyntax>();
-            for (auto* declarator : netDecl.declarators) {
-                // The declarator name is driven by the initializer (if any)
-                std::string net_name(declarator->name.valueText());
-                if (!net_name.empty() && declarator->initializer) {
-                    // The net itself is driven internally
-                    info.assign_driven.insert(net_name);
-
-                    // Extract signals from the initializer expression - these are consumed
-                    auto init_signals = extractIdentifiersFromSyntax(*declarator->initializer);
-                    for (const auto& sig : init_signals) {
-                        // Don't add the net name itself as consumed
-                        if (sig != net_name) {
-                            info.assign_consumed.insert(sig);
-                        }
-                    }
-                }
-            }
-        }
-
-        // ─────────────────────────────────────────────────────────────────────
-        // Data declarations with inline initializers (logic/reg with assignment)
-        // e.g., logic unused_ok = &{1'b0, sig_a};
-        // ─────────────────────────────────────────────────────────────────────
-        if (member->kind == SyntaxKind::DataDeclaration) {
-            auto& dataDecl = member->as<DataDeclarationSyntax>();
-            for (auto* declarator : dataDecl.declarators) {
-                std::string var_name(declarator->name.valueText());
-                if (!var_name.empty() && declarator->initializer) {
-                    // The variable itself is driven internally
-                    info.assign_driven.insert(var_name);
-
-                    // Extract signals from the initializer expression - these are consumed
-                    auto init_signals = extractIdentifiersFromSyntax(*declarator->initializer);
-                    for (const auto& sig : init_signals) {
-                        if (sig != var_name) {
-                            info.assign_consumed.insert(sig);
-                        }
-                    }
-                }
-            }
-        }
+        processMemberRecursive(member, info, in_autologic_block);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -744,9 +822,34 @@ void AutosAnalyzer::generateAutoportsReplacement(
     for (const auto& n : inouts) all_ports.emplace_back("inout", n);
     for (const auto& n : inputs) all_ports.emplace_back("input", n);
 
+    // Check if we need to add a comma between existing ports and generated ports
+    // This is needed when the user's last port doesn't have a trailing comma
+    bool needs_leading_comma = false;
+    if (!all_ports.empty() && !info.autoports.existing_ports.empty()) {
+        size_t marker_start = info.autoports.marker_end - markers::AUTOPORTS.length();
+
+        // Search backwards for the last non-whitespace character
+        for (size_t i = marker_start; i > 0; --i) {
+            char c = source_content_[i - 1];
+            if (c == ',') {
+                // Found a trailing comma - no need to add one
+                needs_leading_comma = false;
+                break;
+            } else if (!std::isspace(static_cast<unsigned char>(c))) {
+                // Found non-whitespace that isn't comma - need to add one
+                needs_leading_comma = true;
+                break;
+            }
+        }
+    }
+
     // Generate port list with commas between items
     for (size_t i = 0; i < all_ports.size(); ++i) {
         const auto& [dir, net] = all_ports[i];
+        // Add comma before first port if needed
+        if (i == 0 && needs_leading_comma) {
+            oss << ",";
+        }
         oss << "\n    " << fmt(dir, net);
         if (i < all_ports.size() - 1) oss << ",";
     }
@@ -755,8 +858,34 @@ void AutosAnalyzer::generateAutoportsReplacement(
         oss << "\n";
     }
 
+    // Determine replacement start position
+    size_t replacement_start = info.autoports.marker_end;
+
+    // If AUTOPORTS is empty but there are existing ports, we need to remove
+    // the trailing comma from the previous port to avoid syntax errors like:
+    //   input logic phy_status,
+    //   /*AUTOPORTS*/);  <-- comma before closing paren is invalid
+    if (all_ports.empty() && !info.autoports.existing_ports.empty()) {
+        // Search backwards from the marker start to find and remove trailing comma
+        // marker_start is the position of '/' in /*AUTOPORTS*/
+        size_t marker_start = info.autoports.marker_end - markers::AUTOPORTS.length();
+
+        // Search backwards for the comma, skipping whitespace
+        for (size_t i = marker_start; i > 0; --i) {
+            char c = source_content_[i - 1];
+            if (c == ',') {
+                // Found the trailing comma - extend replacement to include it
+                replacement_start = i - 1;
+                break;
+            } else if (!std::isspace(static_cast<unsigned char>(c))) {
+                // Found non-whitespace that isn't comma - stop searching
+                break;
+            }
+        }
+    }
+
     replacements_.push_back({
-        info.autoports.marker_end,
+        replacement_start,
         info.autoports.close_paren_pos,
         oss.str(),
         "AUTOPORTS"

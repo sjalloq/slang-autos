@@ -1,6 +1,7 @@
 #include "slang-autos/CompilationUtils.h"
 
 #include "slang/ast/Compilation.h"
+#include "slang/ast/symbols/BlockSymbols.h"
 #include "slang/ast/symbols/CompilationUnitSymbols.h"
 #include "slang/ast/symbols/InstanceSymbols.h"
 #include "slang/ast/symbols/PortSymbols.h"
@@ -216,7 +217,8 @@ std::vector<PortInfo> getModulePortsFromCompilation(
     const InstanceBodySymbol* found_body = nullptr;
 
     // Helper function to check a member for a matching module body.
-    // Uses std::function to allow recursive calls for multi-dimensional arrays.
+    // Uses std::function to allow recursive calls for multi-dimensional arrays
+    // and generate blocks.
     std::function<bool(const Symbol&)> checkMember = [&](const Symbol& member) -> bool {
         // Handle single instances
         if (auto* inst = member.as_if<InstanceSymbol>()) {
@@ -234,6 +236,24 @@ std::vector<PortInfo> getModulePortsFromCompilation(
                 const Symbol* elem = instArray->elements[0];
                 // Recursively check the element
                 if (checkMember(*elem)) {
+                    return true;
+                }
+            }
+        }
+        // Handle generate blocks (e.g., if/case/loop generate)
+        else if (auto* genBlock = member.as_if<GenerateBlockSymbol>()) {
+            // Recursively search members inside the generate block
+            for (auto& m : genBlock->members()) {
+                if (checkMember(m)) {
+                    return true;
+                }
+            }
+        }
+        // Handle generate block arrays (from loop generate)
+        else if (auto* genArray = member.as_if<GenerateBlockArraySymbol>()) {
+            // Search all elements in the array
+            for (auto* elem : genArray->entries) {
+                if (elem && checkMember(*elem)) {
                     return true;
                 }
             }
