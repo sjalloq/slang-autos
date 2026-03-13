@@ -147,12 +147,17 @@ if(SLANG_AUTOS_BUILD_LSP)
 endif()
 
 # ============================================================================
-# Install (future)
+# Install
 # ============================================================================
 
-# install(TARGETS slang-autos slang-autos-lib
-#     RUNTIME DESTINATION bin
-#     LIBRARY DESTINATION lib
-#     ARCHIVE DESTINATION lib
-# )
-# install(DIRECTORY include/ DESTINATION include)
+include(GNUInstallDirs)
+
+install(TARGETS slang-autos
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+
+if(SLANG_AUTOS_BUILD_LSP)
+    install(TARGETS slang-autos-lsp
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    )
+endif()
