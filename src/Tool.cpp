@@ -25,6 +25,40 @@ AutosTool::~AutosTool() = default;
 AutosTool::AutosTool(AutosTool&&) noexcept = default;
 AutosTool& AutosTool::operator=(AutosTool&&) noexcept = default;
 
+bool ExpansionResult::hasNonWhitespaceChanges() const {
+    // Compare original and modified content ignoring whitespace differences.
+    // This allows formatters (e.g. verible-verilog-format) to reindent
+    // AUTO-generated code without --check reporting false positives.
+    auto skipWs = [](const std::string& s, size_t pos) {
+        while (pos < s.size() && (s[pos] == ' ' || s[pos] == '\t'))
+            ++pos;
+        return pos;
+    };
+
+    size_t i = 0, j = 0;
+    while (i < original_content.size() && j < modified_content.size()) {
+        // At start of line or after newline, skip whitespace in both
+        if (original_content[i] == ' ' || original_content[i] == '\t') {
+            i = skipWs(original_content, i);
+            j = skipWs(modified_content, j);
+            continue;
+        }
+        if (modified_content[j] == ' ' || modified_content[j] == '\t') {
+            i = skipWs(original_content, i);
+            j = skipWs(modified_content, j);
+            continue;
+        }
+        if (original_content[i] != modified_content[j])
+            return true;
+        ++i;
+        ++j;
+    }
+    // Skip any trailing whitespace
+    i = skipWs(original_content, i);
+    j = skipWs(modified_content, j);
+    return i != original_content.size() || j != modified_content.size();
+}
+
 bool AutosTool::loadWithArgs(const std::vector<std::string>& args) {
     // Create driver
     driver_ = std::make_unique<slang::driver::Driver>();

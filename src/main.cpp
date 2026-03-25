@@ -602,7 +602,11 @@ int main(int argc, char* argv[]) {
         total_autologic += result.autologic_count;
         total_autoports += result.autoports_count;
 
-        if (result.hasChanges()) {
+        // In check mode, ignore whitespace-only differences (e.g. from formatters)
+        bool changed = check_mode ? result.hasNonWhitespaceChanges()
+                                  : result.hasChanges();
+
+        if (changed) {
             ++files_changed;
 
             if (diff_mode) {

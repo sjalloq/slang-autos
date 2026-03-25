@@ -35,6 +35,9 @@ struct ExpansionResult {
     [[nodiscard]] bool hasChanges() const {
         return original_content != modified_content;
     }
+
+    /// Check if any non-whitespace changes were made
+    [[nodiscard]] bool hasNonWhitespaceChanges() const;
 };
 
 /// Configuration options for AutosTool
