@@ -396,29 +396,40 @@ AutosAnalyzer::collectModuleInfo(const ModuleDeclarationSyntax& module) {
             info.autoports.marker_end = pos->second;
         }
 
-        // Scan ports for marker
+        // Scan ports and separator tokens (commas) for the AUTOPORTS marker.
+        // In a SeparatedSyntaxList, elements at even indices are port nodes,
+        // odd indices are separator tokens (commas). The marker may appear
+        // as trivia on either a port's first token or a separator comma
+        // (e.g., when the marker is followed by a comma before generated ports).
         bool found_marker = false;
-        for (auto* port : ansi.ports) {
-            if (auto tok = port->getFirstToken(); tok.valid()) {
+        for (auto elem : ansi.ports.elems()) {
+            if (elem.isToken()) {
+                // Separator token (comma) - check for marker in trivia
+                auto tok = elem.token();
                 if (auto pos = findMarkerInTrivia(tok, markers::AUTOPORTS)) {
                     info.has_autoports = true;
                     info.autoports.marker_end = pos->second;
                     found_marker = true;
                 }
-            }
+            } else if (elem.isNode()) {
+                // Port node - check first token trivia for marker
+                auto* port = &elem.node()->as<MemberSyntax>();
+                if (auto tok = port->getFirstToken(); tok.valid()) {
+                    if (auto pos = findMarkerInTrivia(tok, markers::AUTOPORTS)) {
+                        info.has_autoports = true;
+                        info.autoports.marker_end = pos->second;
+                        found_marker = true;
+                    }
+                }
 
-            if (!found_marker) {
-                // Port before marker - track name for filtering
-                // TODO: Handle other ANSI port syntax kinds if needed (e.g., ExplicitAnsiPort).
-                // Currently ImplicitAnsiPort covers most common cases including:
-                //   - input clk
-                //   - input wire clk
-                //   - output logic [7:0] data
-                if (port->kind == SyntaxKind::ImplicitAnsiPort) {
-                    auto& implicit = port->as<ImplicitAnsiPortSyntax>();
-                    std::string name = std::string(implicit.declarator->name.valueText());
-                    info.autoports.existing_ports.insert(name);
-                    info.existing_decls.insert(name);
+                if (!found_marker) {
+                    // Port before marker - track name for filtering
+                    if (port->kind == SyntaxKind::ImplicitAnsiPort) {
+                        auto& implicit = port->as<ImplicitAnsiPortSyntax>();
+                        std::string name = std::string(implicit.declarator->name.valueText());
+                        info.autoports.existing_ports.insert(name);
+                        info.existing_decls.insert(name);
+                    }
                 }
             }
         }

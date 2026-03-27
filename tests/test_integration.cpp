@@ -877,6 +877,109 @@ TEST_CASE("AUTOPORTS - local declarations not added to ports", "[integration][au
     CHECK(port_section.find("data_out") != std::string::npos);
 }
 
+TEST_CASE("AUTOPORTS - re-expansion removes port when local decl added", "[integration][autoports]") {
+    // Bug: After initial expansion, data_in was added as an AUTOPORTS input.
+    // The user then added "logic [7:0] data_in;" locally.
+    // On re-expansion, data_in should be removed from AUTOPORTS.
+    auto top_sv = getFixturePath("autoports_local_redecl/top.sv");
+    auto lib_dir = getFixturePath("autoports_local_redecl/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+
+    CHECK(result.success);
+
+    // Find the AUTOPORTS-generated port section
+    size_t autoports_pos = result.modified_content.find("/*AUTOPORTS*/");
+    REQUIRE(autoports_pos != std::string::npos);
+
+    size_t port_list_end = result.modified_content.find(");", autoports_pos);
+    REQUIRE(port_list_end != std::string::npos);
+
+    std::string port_section = result.modified_content.substr(autoports_pos, port_list_end - autoports_pos);
+
+    // data_in should NOT be in the port list anymore - it's now locally declared
+    INFO("Port section: " << port_section);
+    CHECK(port_section.find("data_in") == std::string::npos);
+
+    // data_out and valid should still be in AUTOPORTS (they're external)
+    CHECK(port_section.find("data_out") != std::string::npos);
+    CHECK(port_section.find("valid") != std::string::npos);
+
+    // The local declaration should still be in the module body
+    CHECK(result.modified_content.find("logic [7:0] data_in") != std::string::npos);
+}
+
+TEST_CASE("AUTOPORTS - re-expansion reroutes internal signal", "[integration][autoports]") {
+    // Scenario:
+    // 1. producer has output data_out, consumer has input data_in (different names)
+    // 2. First expansion promotes both to top-level AUTOPORTS
+    // 3. User adds "logic [7:0] data_in;" and "assign data_in = data_out;" to
+    //    route the signal internally instead of through the parent's ports
+    // 4. Re-expansion should remove data_in from AUTOPORTS (now locally driven)
+    //    and move data_out to AUTOLOGIC (no longer needs to be a port)
+    auto top_sv = getFixturePath("autoports_reroute/top.sv");
+    auto lib_dir = getFixturePath("autoports_reroute/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+
+    CHECK(result.success);
+
+    // Find the AUTOPORTS-generated port section
+    size_t autoports_pos = result.modified_content.find("/*AUTOPORTS*/");
+    REQUIRE(autoports_pos != std::string::npos);
+
+    size_t port_list_end = result.modified_content.find(");", autoports_pos);
+    REQUIRE(port_list_end != std::string::npos);
+
+    std::string port_section = result.modified_content.substr(autoports_pos, port_list_end - autoports_pos);
+
+    // data_in should NOT be in the port list - it's now locally declared
+    INFO("Port section: " << port_section);
+    CHECK(port_section.find("data_in") == std::string::npos);
+
+    // data_out should also NOT be in the port list - it's consumed internally
+    // by the assign statement, so it should become AUTOLOGIC instead
+    CHECK(port_section.find("data_out") == std::string::npos);
+
+    // data_out should appear in AUTOLOGIC instead
+    size_t autologic_pos = result.modified_content.find("/*AUTOLOGIC*/");
+    REQUIRE(autologic_pos != std::string::npos);
+    size_t autologic_end = result.modified_content.find("// End of automatics", autologic_pos);
+    if (autologic_end != std::string::npos) {
+        std::string logic_section = result.modified_content.substr(autologic_pos, autologic_end - autologic_pos);
+        INFO("Logic section: " << logic_section);
+        CHECK(logic_section.find("data_out") != std::string::npos);
+    }
+
+    // The user's local declarations should still be present
+    CHECK(result.modified_content.find("logic [7:0] data_in") != std::string::npos);
+    CHECK(result.modified_content.find("assign data_in = data_out") != std::string::npos);
+}
+
 TEST_CASE("AUTOPORTS - concatenation extracts signal name", "[integration][autoports]") {
     // This tests that when a template uses a concatenation like {1'b0, sig_a},
     // AUTOPORTS extracts just the signal name (sig_a) and doesn't use the
