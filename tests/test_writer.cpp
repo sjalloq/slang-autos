@@ -68,3 +68,40 @@ TEST_CASE("SourceWriter - replacement that expands", "[writer]") {
     std::string result = writer.applyReplacements(content, repls);
     CHECK(result == "A123B");
 }
+
+TEST_CASE("SourceWriter - inverted range is skipped", "[writer]") {
+    SourceWriter writer;
+    std::string content = "Hello World";
+
+    std::vector<Replacement> repls = {
+        {8, 3, "CORRUPT"}  // start > end: inverted range
+    };
+
+    std::string result = writer.applyReplacements(content, repls);
+    CHECK(result == "Hello World");
+}
+
+TEST_CASE("SourceWriter - out-of-bounds range is skipped", "[writer]") {
+    SourceWriter writer;
+    std::string content = "Hello";
+
+    std::vector<Replacement> repls = {
+        {2, 100, "CORRUPT"}  // end > content size
+    };
+
+    std::string result = writer.applyReplacements(content, repls);
+    CHECK(result == "Hello");
+}
+
+TEST_CASE("SourceWriter - valid replacements still applied alongside invalid", "[writer]") {
+    SourceWriter writer;
+    std::string content = "Hello World";
+
+    std::vector<Replacement> repls = {
+        {6, 11, "Universe"},  // Valid
+        {20, 5, "BAD"}        // Invalid: out of bounds
+    };
+
+    std::string result = writer.applyReplacements(content, repls);
+    CHECK(result == "Hello Universe");
+}

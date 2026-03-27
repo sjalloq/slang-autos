@@ -27,6 +27,9 @@ std::string SourceWriter::applyReplacements(
     std::string result = content;
 
     for (const auto& repl : replacements) {
+        if (repl.start > repl.end || repl.end > result.size()) {
+            continue;  // Skip invalid ranges to prevent corruption
+        }
         result = result.substr(0, repl.start) +
                  repl.new_text +
                  result.substr(repl.end);

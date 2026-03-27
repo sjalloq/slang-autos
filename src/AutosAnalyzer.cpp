@@ -672,9 +672,22 @@ void AutosAnalyzer::generateAutoInstReplacement(
         }
     }
 
+    // Validate replacement range to prevent file corruption
+    if (inst.marker_end > inst.close_paren_pos ||
+        inst.close_paren_pos > source_content_.size()) {
+        if (options_.diagnostics) {
+            options_.diagnostics->addWarning(
+                "AUTOINST '" + inst.instance_name + "': invalid replacement range "
+                "(marker_end=" + std::to_string(inst.marker_end) +
+                ", close_paren=" + std::to_string(inst.close_paren_pos) +
+                ") - skipping expansion to avoid file corruption",
+                "", 0, "invalid_range");
+        }
+        return;
+    }
+
     // Check if replacement would actually change the content
-    if (inst.marker_end < inst.close_paren_pos &&
-        inst.close_paren_pos <= source_content_.size()) {
+    if (inst.marker_end <= inst.close_paren_pos) {
         std::string_view original = source_content_.substr(
             inst.marker_end, inst.close_paren_pos - inst.marker_end);
         if (original == port_text) {
@@ -882,6 +895,20 @@ void AutosAnalyzer::generateAutoportsReplacement(
                 break;
             }
         }
+    }
+
+    // Validate replacement range to prevent file corruption
+    if (replacement_start > info.autoports.close_paren_pos ||
+        info.autoports.close_paren_pos > source_content_.size()) {
+        if (options_.diagnostics) {
+            options_.diagnostics->addWarning(
+                "AUTOPORTS: invalid replacement range "
+                "(start=" + std::to_string(replacement_start) +
+                ", close_paren=" + std::to_string(info.autoports.close_paren_pos) +
+                ") - skipping expansion to avoid file corruption",
+                "", 0, "invalid_range");
+        }
+        return;
     }
 
     replacements_.push_back({
