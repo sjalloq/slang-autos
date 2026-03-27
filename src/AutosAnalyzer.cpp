@@ -959,12 +959,14 @@ std::string AutosAnalyzer::generatePortConnections(
         }
     }
 
-    // Group by direction if needed
+    // Group/sort ports based on grouping option
     std::vector<const PortInfo*> sorted_ports;
     if (options_.grouping == PortGrouping::Alphabetical) {
         sorted_ports = auto_ports;
         std::sort(sorted_ports.begin(), sorted_ports.end(),
             [](const PortInfo* a, const PortInfo* b) { return a->name < b->name; });
+    } else if (options_.grouping == PortGrouping::ByDeclaration) {
+        sorted_ports = auto_ports;
     } else {
         // ByDirection: outputs, inouts, inputs
         for (const auto* p : auto_ports) {

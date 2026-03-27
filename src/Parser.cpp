@@ -577,8 +577,10 @@ InlineConfig parseInlineConfig(const std::string& content, const std::string& fi
                 config.grouping = PortGrouping::Alphabetical;
             } else if (value == "direction" || value == "bydirection") {
                 config.grouping = PortGrouping::ByDirection;
+            } else if (value == "declaration" || value == "bydeclaration") {
+                config.grouping = PortGrouping::ByDeclaration;
             } else {
-                warnInvalidValue(key, value, "alphabetical, alpha, direction, bydirection");
+                warnInvalidValue(key, value, "alphabetical, alpha, direction, bydirection, declaration, bydeclaration");
             }
         } else if (key == "indent") {
             if (value == "tab") {

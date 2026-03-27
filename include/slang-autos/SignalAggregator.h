@@ -69,7 +69,8 @@ struct PortConnection {
 /// Grouping/sorting preference for generated declarations and ports.
 enum class PortGrouping {
     ByDirection,    ///< Group by input/output/inout (verilog-mode style)
-    Alphabetical    ///< Sort all alphabetically by name
+    Alphabetical,   ///< Sort all alphabetically by name
+    ByDeclaration   ///< Preserve submodule declaration order
 };
 
 /// Net information aggregated across all instance connections.

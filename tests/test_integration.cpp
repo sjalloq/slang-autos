@@ -674,6 +674,56 @@ TEST_CASE("Integration - indentation preservation", "[integration][formatting]")
     CHECK(result.modified_content.find("\n  );") != std::string::npos);       // 2 spaces
 }
 
+TEST_CASE("Integration - declaration order grouping", "[integration][formatting]") {
+    auto top_sv = getFixturePath("grouping_declaration/top.sv");
+    auto lib_dir = getFixturePath("grouping_declaration/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    // Set inline config for declaration order grouping
+    InlineConfig cfg;
+    cfg.grouping = PortGrouping::ByDeclaration;
+    tool.setInlineConfig(top_sv, cfg);
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+
+    CHECK(result.success);
+    CHECK(result.autoinst_count == 1);
+
+    // Ports should appear in submodule declaration order, not grouped by direction.
+    // Submodule order: clk, data_out, rst_n, valid, data_in
+    auto pos_clk = result.modified_content.find(".clk");
+    auto pos_data_out = result.modified_content.find(".data_out");
+    auto pos_rst_n = result.modified_content.find(".rst_n");
+    auto pos_valid = result.modified_content.find(".valid");
+    auto pos_data_in = result.modified_content.find(".data_in");
+
+    REQUIRE(pos_clk != std::string::npos);
+    REQUIRE(pos_data_out != std::string::npos);
+    REQUIRE(pos_rst_n != std::string::npos);
+    REQUIRE(pos_valid != std::string::npos);
+    REQUIRE(pos_data_in != std::string::npos);
+
+    CHECK(pos_clk < pos_data_out);
+    CHECK(pos_data_out < pos_rst_n);
+    CHECK(pos_rst_n < pos_valid);
+    CHECK(pos_valid < pos_data_in);
+
+    // Should NOT have direction group comments
+    CHECK(result.modified_content.find("// Outputs") == std::string::npos);
+    CHECK(result.modified_content.find("// Inputs") == std::string::npos);
+}
+
 // =============================================================================
 // AUTOPORTS Tests
 // =============================================================================
