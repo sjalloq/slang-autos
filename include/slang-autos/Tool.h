@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -50,6 +51,7 @@ struct AutosToolOptions {
     int verbosity = 1;
     bool single_unit = true;
     bool resolved_ranges = false; ///< Use resolved widths instead of original syntax
+    std::optional<DirectionComments> direction_comments; ///< Per-port direction arrows (nullopt = disabled)
 };
 
 /// Main orchestrator for AUTO macro expansion.

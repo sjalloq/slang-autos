@@ -5,6 +5,7 @@
 #include <toml++/toml.hpp>
 
 #include <fstream>
+#include <sstream>
 
 namespace slang_autos {
 
@@ -19,6 +20,7 @@ AutosToolOptions MergedConfig::toToolOptions() const {
     opts.indent = indent;
     opts.verbosity = verbosity;
     opts.resolved_ranges = resolved_ranges;
+    opts.direction_comments = direction_comments;
     return opts;
 }
 
@@ -138,6 +140,33 @@ std::optional<FileConfig> ConfigLoader::loadFile(
             if (auto val = (*formatting)["alignment"].as_boolean()) {
                 config.alignment = val->get();
             }
+
+            // direction_comments: bool (true = defaults) or string ("<- -> <->")
+            if (auto val = (*formatting)["direction_comments"].as_boolean()) {
+                if (val->get()) {
+                    config.direction_comments = DirectionComments{};
+                }
+                // false means explicitly disabled (leave as nullopt)
+            } else if (auto str = (*formatting)["direction_comments"].as_string()) {
+                std::istringstream iss(std::string(str->get()));
+                std::vector<std::string> tokens;
+                std::string tok;
+                while (iss >> tok) {
+                    tokens.push_back(tok);
+                }
+                if (tokens.size() == 3) {
+                    DirectionComments dc;
+                    dc.input  = tokens[0];
+                    dc.output = tokens[1];
+                    dc.inout  = tokens[2];
+                    config.direction_comments = std::move(dc);
+                } else if (diagnostics) {
+                    diagnostics->addWarning(
+                        "direction_comments string must have exactly 3 tokens "
+                        "(input output inout), got " + std::to_string(tokens.size()),
+                        config_path.string(), 0, "config");
+                }
+            }
         }
 
         // [behavior] section
@@ -240,6 +269,9 @@ MergedConfig ConfigLoader::merge(
         if (file_config->resolved_ranges) {
             result.resolved_ranges = *file_config->resolved_ranges;
         }
+        if (file_config->direction_comments) {
+            result.direction_comments = file_config->direction_comments;
+        }
     }
 
     // Layer 2: Inline config (overrides file config)
@@ -271,6 +303,9 @@ MergedConfig ConfigLoader::merge(
     }
     if (inline_config.resolved_ranges) {
         result.resolved_ranges = *inline_config.resolved_ranges;
+    }
+    if (inline_config.direction_comments) {
+        result.direction_comments = inline_config.direction_comments;
     }
 
     // Layer 3: CLI options (highest priority)

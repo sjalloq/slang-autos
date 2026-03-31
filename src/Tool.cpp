@@ -169,6 +169,11 @@ ExpansionResult AutosTool::expandFile(
     opts.grouping = inline_config.grouping.value_or(PortGrouping::ByDirection);
     opts.strictness = inline_config.strictness.value_or(options_.strictness);
     opts.resolved_ranges = inline_config.resolved_ranges.value_or(options_.resolved_ranges);
+    if (inline_config.direction_comments) {
+        opts.direction_comments = inline_config.direction_comments;
+    } else {
+        opts.direction_comments = options_.direction_comments;
+    }
     opts.diagnostics = &diagnostics_;
 
     // ─────────────────────────────────────────────────────────────────────────

@@ -993,47 +993,87 @@ std::string AutosAnalyzer::generatePortConnections(
 
     oss << "\n";
 
+    // Build port connection strings (without direction comments) for potential alignment
+    struct PortLine {
+        std::string prefix;     // Group comment line (e.g., "    // Outputs\n"), empty if none
+        std::string connection; // Port connection text (e.g., ".clk (clk),")
+        std::string direction;  // "input", "output", "inout"
+    };
+    std::vector<PortLine> port_lines;
+    port_lines.reserve(sorted_ports.size());
+
     std::string current_dir;
+    size_t max_connection_len = 0;
+
     for (size_t i = 0; i < sorted_ports.size(); ++i) {
         const auto* port = sorted_ports[i];
         auto match = matcher.matchPort(*port);
 
-        // Direction comment for grouping
+        PortLine pl;
+        pl.direction = port->direction;
+
+        // Direction group comment
         if (options_.grouping == PortGrouping::ByDirection && port->direction != current_dir) {
             current_dir = port->direction;
             std::string comment = (current_dir == "output") ? "Outputs" :
                                   (current_dir == "inout") ? "Inouts" : "Inputs";
-            oss << port_indent << "// " << comment << "\n";
+            pl.prefix = port_indent + "// " + comment + "\n";
         }
 
-        oss << port_indent;
+        // Build connection text
+        std::ostringstream conn;
+        conn << port_indent;
 
         if (TemplateMatcher::isSpecialValue(match.signal_name) && match.signal_name == "_") {
-            // Unconnected
             if (options_.alignment) {
-                oss << "." << std::left << std::setw(static_cast<int>(max_len))
-                    << port->name << " ()";
+                conn << "." << std::left << std::setw(static_cast<int>(max_len))
+                     << port->name << " ()";
             } else {
-                oss << "." << port->name << " ()";
+                conn << "." << port->name << " ()";
             }
         } else {
             std::string signal = TemplateMatcher::isSpecialValue(match.signal_name)
                 ? TemplateMatcher::formatSpecialValue(match.signal_name)
                 : match.signal_name;
 
-            // Apply width adaptation (slicing, padding, or unused signal)
             signal = adaptSignalWidth(signal, *port, match, inst.instance_name);
 
             if (options_.alignment) {
-                oss << "." << std::left << std::setw(static_cast<int>(max_len))
-                    << port->name << " (" << signal << ")";
+                conn << "." << std::left << std::setw(static_cast<int>(max_len))
+                     << port->name << " (" << signal << ")";
             } else {
-                oss << "." << port->name << " (" << signal << ")";
+                conn << "." << port->name << " (" << signal << ")";
             }
         }
 
         if (i < sorted_ports.size() - 1) {
-            oss << ",";
+            conn << ",";
+        }
+
+        pl.connection = conn.str();
+        if (options_.direction_comments.has_value()) {
+            max_connection_len = std::max(max_connection_len, pl.connection.length());
+        }
+
+        port_lines.push_back(std::move(pl));
+    }
+
+    // Output port lines, with optional direction comments
+    for (const auto& pl : port_lines) {
+        if (!pl.prefix.empty()) {
+            oss << pl.prefix;
+        }
+        oss << pl.connection;
+        if (options_.direction_comments.has_value()) {
+            const auto& dc = *options_.direction_comments;
+            // Pad to align direction comments
+            if (pl.connection.length() < max_connection_len) {
+                oss << std::string(max_connection_len - pl.connection.length(), ' ');
+            }
+            const std::string& arrow = (pl.direction == "output") ? dc.output :
+                                       (pl.direction == "inout")  ? dc.inout :
+                                                                    dc.input;
+            oss << " // " << arrow;
         }
         oss << "\n";
     }

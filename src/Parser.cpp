@@ -621,12 +621,36 @@ InlineConfig parseInlineConfig(const std::string& content, const std::string& fi
             } else {
                 warnInvalidValue(key, value, "true, false, yes, no, 1, 0");
             }
+        } else if (key == "direction-comments") {
+            if (value == "true" || value == "1" || value == "yes") {
+                config.direction_comments = DirectionComments{};
+            } else if (value == "false" || value == "0" || value == "no") {
+                config.direction_comments.reset();
+            } else {
+                // Try parsing as 3 custom tokens: input output inout
+                std::istringstream iss(value);
+                std::vector<std::string> tokens;
+                std::string tok;
+                while (iss >> tok) {
+                    tokens.push_back(tok);
+                }
+                if (tokens.size() == 3) {
+                    DirectionComments dc;
+                    dc.input  = tokens[0];
+                    dc.output = tokens[1];
+                    dc.inout  = tokens[2];
+                    config.direction_comments = std::move(dc);
+                } else {
+                    warnInvalidValue(key, value,
+                        "true, false, yes, no, 1, 0, or three whitespace-separated tokens (input output inout)");
+                }
+            }
         } else {
             // Unknown key - warn and store as custom option
             if (diagnostics) {
                 diagnostics->addWarning(
                     "Unknown inline config key 'slang-autos-" + key + "'. "
-                    "Valid keys: libdir, libext, incdir, grouping, indent, alignment, strictness, resolved-ranges",
+                    "Valid keys: libdir, libext, incdir, grouping, indent, alignment, strictness, resolved-ranges, direction-comments",
                     "", 0, "inline_config");
             }
             config.custom_options[key] = value;

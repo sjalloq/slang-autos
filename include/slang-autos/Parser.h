@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "Config.h"
 #include "Diagnostics.h"
 
 namespace slang_autos {
@@ -34,6 +35,7 @@ struct InlineConfig {
     std::optional<bool> alignment;      ///< Port name alignment
     std::optional<StrictnessMode> strictness; ///< Strictness mode
     std::optional<bool> resolved_ranges; ///< Use resolved widths instead of original syntax
+    std::optional<DirectionComments> direction_comments; ///< Per-port direction arrows
     std::unordered_map<std::string, std::string> custom_options; ///< Other options
 
     /// Check if any configuration was found
@@ -41,7 +43,7 @@ struct InlineConfig {
         return libdirs.empty() && libext.empty() && incdirs.empty() &&
                !grouping.has_value() && !indent.has_value() &&
                !alignment.has_value() && !strictness.has_value() &&
-               !resolved_ranges.has_value() &&
+               !resolved_ranges.has_value() && !direction_comments.has_value() &&
                custom_options.empty();
     }
 };

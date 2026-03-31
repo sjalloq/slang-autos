@@ -724,6 +724,134 @@ TEST_CASE("Integration - declaration order grouping", "[integration][formatting]
     CHECK(result.modified_content.find("// Inputs") == std::string::npos);
 }
 
+TEST_CASE("Integration - direction comments on AUTOINST ports", "[integration][formatting]") {
+    auto top_sv = getFixturePath("direction_comments/top.sv");
+    auto lib_dir = getFixturePath("direction_comments/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    // Set inline config for direction comments
+    InlineConfig cfg;
+    cfg.direction_comments = DirectionComments{};
+    tool.setInlineConfig(top_sv, cfg);
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+
+    CHECK(result.success);
+    CHECK(result.autoinst_count == 1);
+
+    // Each port line should have a direction comment
+    CHECK(result.modified_content.find(".data_out") != std::string::npos);
+    CHECK(result.modified_content.find(".data_in") != std::string::npos);
+    CHECK(result.modified_content.find(".data_bus") != std::string::npos);
+
+    // Check direction arrows: outputs get // ->, inputs get // <-, inouts get // <->
+    // Find lines containing each port and verify the direction comment
+    auto lines = result.modified_content;
+
+    // Outputs should have // ->
+    auto pos_data_out = lines.find(".data_out");
+    REQUIRE(pos_data_out != std::string::npos);
+    auto eol_data_out = lines.find('\n', pos_data_out);
+    auto line_data_out = lines.substr(pos_data_out, eol_data_out - pos_data_out);
+    CHECK(line_data_out.find("// ->") != std::string::npos);
+
+    auto pos_valid = lines.find(".valid");
+    REQUIRE(pos_valid != std::string::npos);
+    auto eol_valid = lines.find('\n', pos_valid);
+    auto line_valid = lines.substr(pos_valid, eol_valid - pos_valid);
+    CHECK(line_valid.find("// ->") != std::string::npos);
+
+    // Inouts should have // <->
+    auto pos_data_bus = lines.find(".data_bus");
+    REQUIRE(pos_data_bus != std::string::npos);
+    auto eol_data_bus = lines.find('\n', pos_data_bus);
+    auto line_data_bus = lines.substr(pos_data_bus, eol_data_bus - pos_data_bus);
+    CHECK(line_data_bus.find("// <->") != std::string::npos);
+
+    // Inputs should have // <-
+    auto pos_clk = lines.find(".clk");
+    REQUIRE(pos_clk != std::string::npos);
+    auto eol_clk = lines.find('\n', pos_clk);
+    auto line_clk = lines.substr(pos_clk, eol_clk - pos_clk);
+    CHECK(line_clk.find("// <-") != std::string::npos);
+    // Make sure it's not // <-> (the inout arrow)
+    CHECK(line_clk.find("// <->") == std::string::npos);
+
+    auto pos_data_in = lines.find(".data_in");
+    REQUIRE(pos_data_in != std::string::npos);
+    auto eol_data_in = lines.find('\n', pos_data_in);
+    auto line_data_in = lines.substr(pos_data_in, eol_data_in - pos_data_in);
+    CHECK(line_data_in.find("// <-") != std::string::npos);
+    CHECK(line_data_in.find("// <->") == std::string::npos);
+}
+
+TEST_CASE("Integration - custom direction comment arrows", "[integration][formatting]") {
+    auto top_sv = getFixturePath("direction_comments_custom/top.sv");
+    auto lib_dir = getFixturePath("direction_comments_custom/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    // Set inline config with custom arrows: I for input, O for output, IO for inout
+    InlineConfig cfg;
+    DirectionComments dc;
+    dc.input  = "I";
+    dc.output = "O";
+    dc.inout  = "IO";
+    cfg.direction_comments = std::move(dc);
+    tool.setInlineConfig(top_sv, cfg);
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+
+    CHECK(result.success);
+    CHECK(result.autoinst_count == 1);
+
+    auto lines = result.modified_content;
+
+    // Outputs should have // O
+    auto pos_data_out = lines.find(".data_out");
+    REQUIRE(pos_data_out != std::string::npos);
+    auto eol_data_out = lines.find('\n', pos_data_out);
+    auto line_data_out = lines.substr(pos_data_out, eol_data_out - pos_data_out);
+    CHECK(line_data_out.find("// O") != std::string::npos);
+
+    // Inouts should have // IO
+    auto pos_data_bus = lines.find(".data_bus");
+    REQUIRE(pos_data_bus != std::string::npos);
+    auto eol_data_bus = lines.find('\n', pos_data_bus);
+    auto line_data_bus = lines.substr(pos_data_bus, eol_data_bus - pos_data_bus);
+    CHECK(line_data_bus.find("// IO") != std::string::npos);
+
+    // Inputs should have // I
+    auto pos_clk = lines.find(".clk");
+    REQUIRE(pos_clk != std::string::npos);
+    auto eol_clk = lines.find('\n', pos_clk);
+    auto line_clk = lines.substr(pos_clk, eol_clk - pos_clk);
+    CHECK(line_clk.find("// I") != std::string::npos);
+    // Make sure it's not // IO (the inout arrow)
+    CHECK(line_clk.find("// IO") == std::string::npos);
+}
+
 // =============================================================================
 // AUTOPORTS Tests
 // =============================================================================

@@ -30,6 +30,7 @@ struct AutosAnalyzerOptions {
     PortGrouping grouping{};
     StrictnessMode strictness{};
     bool resolved_ranges = false; ///< Use resolved widths instead of original syntax
+    std::optional<DirectionComments> direction_comments; ///< Per-port direction arrows (nullopt = disabled)
     DiagnosticCollector* diagnostics = nullptr;
 };
 

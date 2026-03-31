@@ -12,6 +12,14 @@ namespace slang_autos {
 // Forward declaration
 struct InlineConfig;
 
+/// Per-port direction arrow strings for AUTOINST output.
+/// When present, each port connection line gets a trailing comment.
+struct DirectionComments {
+    std::string input  = "<-";
+    std::string output = "->";
+    std::string inout  = "<->";
+};
+
 /// Configuration loaded from a .slang-autos.toml file.
 /// All fields are optional - missing values use defaults during merge.
 struct FileConfig {
@@ -29,12 +37,14 @@ struct FileConfig {
     std::optional<int> verbosity;       ///< 0=quiet, 1=normal, 2=verbose
     std::optional<bool> single_unit;    ///< Treat all files as single compilation unit
     std::optional<bool> resolved_ranges;///< Use resolved integer widths instead of original syntax
+    std::optional<DirectionComments> direction_comments; ///< Per-port direction arrows
 
     /// Check if any configuration was loaded
     [[nodiscard]] bool empty() const {
         return !libdirs && !libext && !incdirs &&
                !indent && !alignment &&
-               !strictness && !verbosity && !single_unit && !resolved_ranges;
+               !strictness && !verbosity && !single_unit && !resolved_ranges &&
+               !direction_comments;
     }
 };
 
@@ -66,6 +76,7 @@ struct MergedConfig {
     int verbosity = 1;
     bool single_unit = true;    ///< Default: treat all files as single compilation unit
     bool resolved_ranges = false; ///< Default: preserve original syntax
+    std::optional<DirectionComments> direction_comments; ///< Per-port direction arrows (nullopt = disabled)
 
     /// Convert to AutosToolOptions (for use with AutosTool)
     [[nodiscard]] struct AutosToolOptions toToolOptions() const;
