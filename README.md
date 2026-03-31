@@ -132,6 +132,71 @@ See the main [documentation](https://sjalloq.github.io/slang-autos/) for many mo
 - `sub(a,b)` - Subtraction
 - `mod(a,b)` - Modulus
 
+## Configuration
+
+`slang-autos` can be configured through three layers, with later layers overriding earlier ones:
+
+1. **Config file** (`.slang-autos.toml` or `.slang-autos`) — project-level defaults
+2. **Inline comments** (`// slang-autos-KEY: VALUE`) — per-file overrides
+3. **CLI flags** — highest priority
+
+Library paths (`libdirs`, `libext`, `incdirs`) are **additive** across all layers. All other options use **override** semantics.
+
+### Config File
+
+The config file is searched for in order:
+1. Current working directory
+2. Git repository root
+
+Both `.slang-autos.toml` and `.slang-autos` are accepted (TOML format either way). If both exist in the same directory, `.slang-autos.toml` takes priority.
+
+```toml
+[library]
+libdir = ["rtl/", "lib/"]            # -y equivalents
+libext = [".v", ".sv"]               # +libext+ equivalents
+incdir = ["include/"]                # +incdir+ equivalents
+
+[formatting]
+indent    = 2                        # Number of spaces (or "tab")
+alignment = true                     # Align port names in columns
+grouping  = "direction"              # Port ordering: "alphabetical", "direction", "declaration"
+
+# Direction comments on AUTOINST port connections
+# Can be: true (defaults: <- -> <->), false, or custom tokens
+direction_comments = true
+# direction_comments = "IN OUT INOUT"  # custom tokens
+
+[behavior]
+strictness      = "lenient"          # "strict" errors on missing modules
+verbosity       = 1                  # 0=quiet, 1=normal, 2=verbose
+single_unit     = true               # Treat all files as single compilation unit
+resolved_ranges = false              # Use resolved integer widths instead of original syntax
+```
+
+### Inline Config
+
+Per-file overrides using single-line comments. Environment variables (`$VAR` or `${VAR}`) are expanded in values.
+
+```verilog
+// slang-autos-libdir: rtl/ lib/
+// slang-autos-libext: .v .sv
+// slang-autos-incdir: include/
+// slang-autos-indent: 4
+// slang-autos-alignment: true
+// slang-autos-grouping: direction
+// slang-autos-strictness: strict
+// slang-autos-verbosity: 2
+// slang-autos-single-unit: false
+// slang-autos-resolved-ranges: true
+// slang-autos-direction-comments: true
+// slang-autos-direction-comments: IN OUT INOUT
+```
+
+The `grouping` option controls port ordering in `AUTOPORTS` expansion:
+- `alphabetical` / `alpha` — sort ports alphabetically
+- `direction` / `bydirection` — group by input/output/inout (default)
+- `declaration` / `bydeclaration` — preserve declaration order from the module
+
 ## License
 
 MIT License

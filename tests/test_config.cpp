@@ -6,6 +6,7 @@
 
 #include "slang-autos/Config.h"
 #include "slang-autos/Parser.h"
+#include "slang-autos/SignalAggregator.h"
 #include "slang-autos/Tool.h"
 
 using namespace slang_autos;
@@ -42,9 +43,9 @@ private:
 TEST_CASE("ConfigLoader::loadFile - parses library section", "[config]") {
     TempFile temp(R"(
 [library]
-libdirs = ["./lib", "./rtl/common"]
+libdir = ["./lib", "./rtl/common"]
 libext = [".v", ".sv"]
-incdirs = ["./include"]
+incdir = ["./include"]
 )");
 
     auto config = ConfigLoader::loadFile(temp.file());
@@ -503,4 +504,448 @@ TEST_CASE("parseInlineConfig - expands environment variables in incdir", "[confi
     CHECK(config.incdirs[0] == "/include/path");
 
     unsetenv("SLANG_AUTOS_INC");
+}
+
+// ============================================================================
+// Config File Discovery - alternate filename
+// ============================================================================
+
+TEST_CASE("ConfigLoader::findConfigFile - finds .slang-autos without .toml extension", "[config]") {
+    TempFile temp("[formatting]\nindent = 4\n", ".slang-autos");
+
+    auto found = ConfigLoader::findConfigFile(temp.dir());
+
+    REQUIRE(found.has_value());
+    CHECK(found->filename() == ".slang-autos");
+}
+
+TEST_CASE("ConfigLoader::findConfigFile - .slang-autos.toml takes priority over .slang-autos", "[config]") {
+    // Create a temp directory with both files
+    fs::path dir = fs::temp_directory_path() / "test_config_priority";
+    fs::create_directories(dir);
+
+    std::ofstream(dir / ".slang-autos.toml") << "[formatting]\nindent = 2\n";
+    std::ofstream(dir / ".slang-autos") << "[formatting]\nindent = 4\n";
+
+    auto found = ConfigLoader::findConfigFile(dir);
+
+    REQUIRE(found.has_value());
+    CHECK(found->filename() == ".slang-autos.toml");
+
+    fs::remove_all(dir);
+}
+
+// ============================================================================
+// TOML Environment Variable Expansion
+// ============================================================================
+
+TEST_CASE("ConfigLoader::loadFile - expands env vars in libdirs", "[config]") {
+    setenv("SLANG_AUTOS_TEST_ROOT", "/project/root", 1);
+
+    TempFile temp(R"(
+[library]
+libdir = ["$SLANG_AUTOS_TEST_ROOT/rtl", "${SLANG_AUTOS_TEST_ROOT}/lib"]
+)");
+
+    auto config = ConfigLoader::loadFile(temp.file());
+
+    REQUIRE(config.has_value());
+    REQUIRE(config->libdirs.has_value());
+    CHECK(config->libdirs->size() == 2);
+    CHECK((*config->libdirs)[0] == "/project/root/rtl");
+    CHECK((*config->libdirs)[1] == "/project/root/lib");
+
+    unsetenv("SLANG_AUTOS_TEST_ROOT");
+}
+
+TEST_CASE("ConfigLoader::loadFile - expands env vars in incdirs", "[config]") {
+    setenv("SLANG_AUTOS_TEST_INC", "/inc/path", 1);
+
+    TempFile temp(R"(
+[library]
+incdir = ["$SLANG_AUTOS_TEST_INC"]
+)");
+
+    auto config = ConfigLoader::loadFile(temp.file());
+
+    REQUIRE(config.has_value());
+    REQUIRE(config->incdirs.has_value());
+    CHECK((*config->incdirs)[0] == "/inc/path");
+
+    unsetenv("SLANG_AUTOS_TEST_INC");
+}
+
+TEST_CASE("ConfigLoader::loadFile - does not expand env vars in libext", "[config]") {
+    setenv("SLANG_AUTOS_TEST_EXT", "expanded", 1);
+
+    TempFile temp(R"(
+[library]
+libext = ["$SLANG_AUTOS_TEST_EXT", ".sv"]
+)");
+
+    auto config = ConfigLoader::loadFile(temp.file());
+
+    REQUIRE(config.has_value());
+    REQUIRE(config->libext.has_value());
+    CHECK((*config->libext)[0] == "$SLANG_AUTOS_TEST_EXT");
+    CHECK((*config->libext)[1] == ".sv");
+
+    unsetenv("SLANG_AUTOS_TEST_EXT");
+}
+
+// ============================================================================
+// TOML Grouping Parsing
+// ============================================================================
+
+TEST_CASE("ConfigLoader::loadFile - parses grouping", "[config]") {
+    SECTION("alphabetical") {
+        TempFile temp("[formatting]\ngrouping = \"alphabetical\"\n");
+        auto config = ConfigLoader::loadFile(temp.file());
+        REQUIRE(config.has_value());
+        REQUIRE(config->grouping.has_value());
+        CHECK(*config->grouping == PortGrouping::Alphabetical);
+    }
+
+    SECTION("alpha (alias)") {
+        TempFile temp("[formatting]\ngrouping = \"alpha\"\n");
+        auto config = ConfigLoader::loadFile(temp.file());
+        REQUIRE(config.has_value());
+        REQUIRE(config->grouping.has_value());
+        CHECK(*config->grouping == PortGrouping::Alphabetical);
+    }
+
+    SECTION("direction") {
+        TempFile temp("[formatting]\ngrouping = \"direction\"\n");
+        auto config = ConfigLoader::loadFile(temp.file());
+        REQUIRE(config.has_value());
+        REQUIRE(config->grouping.has_value());
+        CHECK(*config->grouping == PortGrouping::ByDirection);
+    }
+
+    SECTION("bydirection (alias)") {
+        TempFile temp("[formatting]\ngrouping = \"bydirection\"\n");
+        auto config = ConfigLoader::loadFile(temp.file());
+        REQUIRE(config.has_value());
+        REQUIRE(config->grouping.has_value());
+        CHECK(*config->grouping == PortGrouping::ByDirection);
+    }
+
+    SECTION("declaration") {
+        TempFile temp("[formatting]\ngrouping = \"declaration\"\n");
+        auto config = ConfigLoader::loadFile(temp.file());
+        REQUIRE(config.has_value());
+        REQUIRE(config->grouping.has_value());
+        CHECK(*config->grouping == PortGrouping::ByDeclaration);
+    }
+
+    SECTION("bydeclaration (alias)") {
+        TempFile temp("[formatting]\ngrouping = \"bydeclaration\"\n");
+        auto config = ConfigLoader::loadFile(temp.file());
+        REQUIRE(config.has_value());
+        REQUIRE(config->grouping.has_value());
+        CHECK(*config->grouping == PortGrouping::ByDeclaration);
+    }
+
+    SECTION("invalid value warns") {
+        TempFile temp("[formatting]\ngrouping = \"invalid\"\n");
+        DiagnosticCollector diag;
+        auto config = ConfigLoader::loadFile(temp.file(), &diag);
+        REQUIRE(config.has_value());
+        CHECK_FALSE(config->grouping.has_value());
+        CHECK(diag.warningCount() > 0);
+    }
+}
+
+// ============================================================================
+// Inline verbosity and single-unit Parsing
+// ============================================================================
+
+TEST_CASE("parseInlineConfig - parses verbosity", "[config]") {
+    SECTION("valid values") {
+        auto config = parseInlineConfig("// slang-autos-verbosity: 0\n");
+        REQUIRE(config.verbosity.has_value());
+        CHECK(*config.verbosity == 0);
+
+        config = parseInlineConfig("// slang-autos-verbosity: 2\n");
+        REQUIRE(config.verbosity.has_value());
+        CHECK(*config.verbosity == 2);
+    }
+
+    SECTION("out of range warns") {
+        DiagnosticCollector diag;
+        auto config = parseInlineConfig("// slang-autos-verbosity: 5\n", "", &diag);
+        CHECK_FALSE(config.verbosity.has_value());
+        CHECK(diag.warningCount() > 0);
+    }
+
+    SECTION("non-numeric warns") {
+        DiagnosticCollector diag;
+        auto config = parseInlineConfig("// slang-autos-verbosity: high\n", "", &diag);
+        CHECK_FALSE(config.verbosity.has_value());
+        CHECK(diag.warningCount() > 0);
+    }
+}
+
+TEST_CASE("parseInlineConfig - parses single-unit", "[config]") {
+    SECTION("true values") {
+        for (const auto& val : {"true", "1", "yes"}) {
+            auto config = parseInlineConfig(
+                std::string("// slang-autos-single-unit: ") + val + "\n");
+            REQUIRE(config.single_unit.has_value());
+            CHECK(*config.single_unit == true);
+        }
+    }
+
+    SECTION("false values") {
+        for (const auto& val : {"false", "0", "no"}) {
+            auto config = parseInlineConfig(
+                std::string("// slang-autos-single-unit: ") + val + "\n");
+            REQUIRE(config.single_unit.has_value());
+            CHECK(*config.single_unit == false);
+        }
+    }
+
+    SECTION("invalid value warns") {
+        DiagnosticCollector diag;
+        auto config = parseInlineConfig("// slang-autos-single-unit: maybe\n", "", &diag);
+        CHECK_FALSE(config.single_unit.has_value());
+        CHECK(diag.warningCount() > 0);
+    }
+}
+
+// ============================================================================
+// Config Parity Tests
+// ============================================================================
+// Every setting should be configurable from both TOML and inline comments,
+// and the merge should respect the priority chain: CLI > inline > TOML > defaults.
+
+TEST_CASE("Config parity - grouping flows through TOML to tool options", "[config][parity]") {
+    TempFile temp("[formatting]\ngrouping = \"alphabetical\"\n");
+    auto file_config = ConfigLoader::loadFile(temp.file());
+
+    InlineConfig inline_cfg;
+    AutosToolOptions cli_opts;
+    CliFlags cli_flags;
+
+    auto merged = ConfigLoader::merge(file_config, inline_cfg, cli_opts, cli_flags);
+
+    REQUIRE(merged.grouping.has_value());
+    CHECK(*merged.grouping == PortGrouping::Alphabetical);
+
+    auto tool_opts = merged.toToolOptions();
+    REQUIRE(tool_opts.grouping.has_value());
+    CHECK(*tool_opts.grouping == PortGrouping::Alphabetical);
+}
+
+TEST_CASE("Config parity - inline grouping overrides TOML grouping", "[config][parity]") {
+    FileConfig file_cfg;
+    file_cfg.grouping = PortGrouping::Alphabetical;
+
+    InlineConfig inline_cfg;
+    inline_cfg.grouping = PortGrouping::ByDeclaration;
+
+    AutosToolOptions cli_opts;
+    CliFlags cli_flags;
+
+    auto merged = ConfigLoader::merge(file_cfg, inline_cfg, cli_opts, cli_flags);
+
+    REQUIRE(merged.grouping.has_value());
+    CHECK(*merged.grouping == PortGrouping::ByDeclaration);
+}
+
+TEST_CASE("Config parity - inline verbosity overrides TOML verbosity", "[config][parity]") {
+    FileConfig file_cfg;
+    file_cfg.verbosity = 0;
+
+    InlineConfig inline_cfg;
+    inline_cfg.verbosity = 2;
+
+    AutosToolOptions cli_opts;
+    CliFlags cli_flags;
+
+    auto merged = ConfigLoader::merge(file_cfg, inline_cfg, cli_opts, cli_flags);
+
+    CHECK(merged.verbosity == 2);
+}
+
+TEST_CASE("Config parity - inline single_unit overrides TOML single_unit", "[config][parity]") {
+    FileConfig file_cfg;
+    file_cfg.single_unit = true;
+
+    InlineConfig inline_cfg;
+    inline_cfg.single_unit = false;
+
+    AutosToolOptions cli_opts;
+    CliFlags cli_flags;
+
+    auto merged = ConfigLoader::merge(file_cfg, inline_cfg, cli_opts, cli_flags);
+
+    CHECK(merged.single_unit == false);
+}
+
+TEST_CASE("Config parity - CLI overrides inline verbosity", "[config][parity]") {
+    FileConfig file_cfg;
+
+    InlineConfig inline_cfg;
+    inline_cfg.verbosity = 2;
+
+    AutosToolOptions cli_opts;
+    cli_opts.verbosity = 0;
+    CliFlags cli_flags;
+    cli_flags.has_verbosity = true;
+
+    auto merged = ConfigLoader::merge(file_cfg, inline_cfg, cli_opts, cli_flags);
+
+    CHECK(merged.verbosity == 0);
+}
+
+TEST_CASE("Config parity - all settings round-trip through TOML", "[config][parity]") {
+    TempFile temp(R"(
+[library]
+libdir = ["./lib"]
+libext = [".v", ".sv"]
+incdir = ["./inc"]
+
+[formatting]
+indent = 4
+alignment = false
+grouping = "declaration"
+direction_comments = true
+
+[behavior]
+strictness = "strict"
+verbosity = 2
+single_unit = false
+resolved_ranges = true
+)");
+
+    auto config = ConfigLoader::loadFile(temp.file());
+
+    REQUIRE(config.has_value());
+    CHECK(config->libdirs.has_value());
+    CHECK(config->libext.has_value());
+    CHECK(config->incdirs.has_value());
+    CHECK(config->indent.has_value());
+    CHECK(config->alignment.has_value());
+    CHECK(config->grouping.has_value());
+    CHECK(config->direction_comments.has_value());
+    CHECK(config->strictness.has_value());
+    CHECK(config->verbosity.has_value());
+    CHECK(config->single_unit.has_value());
+    CHECK(config->resolved_ranges.has_value());
+
+    CHECK(*config->indent == 4);
+    CHECK(*config->alignment == false);
+    CHECK(*config->grouping == PortGrouping::ByDeclaration);
+    CHECK(*config->strictness == StrictnessMode::Strict);
+    CHECK(*config->verbosity == 2);
+    CHECK(*config->single_unit == false);
+    CHECK(*config->resolved_ranges == true);
+}
+
+// ============================================================================
+// Unknown Key Warning Tests
+// ============================================================================
+
+TEST_CASE("ConfigLoader::loadFile - warns on unknown top-level section", "[config]") {
+    TempFile temp("[bogus]\nfoo = 1\n");
+    DiagnosticCollector diag;
+    auto config = ConfigLoader::loadFile(temp.file(), &diag);
+    REQUIRE(config.has_value());
+    CHECK(diag.warningCount() > 0);
+    CHECK(diag.diagnostics()[0].message.find("bogus") != std::string::npos);
+}
+
+TEST_CASE("ConfigLoader::loadFile - warns on unknown library key", "[config]") {
+    TempFile temp("[library]\nlibdirs = [\"./lib\"]\n");  // should be "libdir"
+    DiagnosticCollector diag;
+    auto config = ConfigLoader::loadFile(temp.file(), &diag);
+    REQUIRE(config.has_value());
+    CHECK_FALSE(config->libdirs.has_value());
+    REQUIRE(diag.warningCount() > 0);
+    CHECK(diag.diagnostics()[0].message.find("libdirs") != std::string::npos);
+}
+
+TEST_CASE("ConfigLoader::loadFile - warns on unknown formatting key", "[config]") {
+    TempFile temp("[formatting]\nalign = true\n");  // should be "alignment"
+    DiagnosticCollector diag;
+    auto config = ConfigLoader::loadFile(temp.file(), &diag);
+    REQUIRE(config.has_value());
+    CHECK_FALSE(config->alignment.has_value());
+    REQUIRE(diag.warningCount() > 0);
+    CHECK(diag.diagnostics()[0].message.find("align") != std::string::npos);
+}
+
+TEST_CASE("ConfigLoader::loadFile - warns on unknown behavior key", "[config]") {
+    TempFile temp("[behavior]\nstrict = true\n");  // should be "strictness"
+    DiagnosticCollector diag;
+    auto config = ConfigLoader::loadFile(temp.file(), &diag);
+    REQUIRE(config.has_value());
+    CHECK_FALSE(config->strictness.has_value());
+    REQUIRE(diag.warningCount() > 0);
+    CHECK(diag.diagnostics()[0].message.find("strict") != std::string::npos);
+}
+
+TEST_CASE("ConfigLoader::loadFile - no warnings on valid config", "[config]") {
+    TempFile temp(R"(
+[library]
+libdir = ["./lib"]
+libext = [".v"]
+incdir = ["./inc"]
+
+[formatting]
+indent = 2
+alignment = true
+grouping = "direction"
+direction_comments = true
+
+[behavior]
+strictness = "lenient"
+verbosity = 1
+single_unit = true
+resolved_ranges = false
+)");
+    DiagnosticCollector diag;
+    auto config = ConfigLoader::loadFile(temp.file(), &diag);
+    REQUIRE(config.has_value());
+    CHECK(diag.warningCount() == 0);
+}
+
+TEST_CASE("Config parity - all settings round-trip through inline", "[config][parity]") {
+    std::string content = R"(
+module test;
+endmodule
+// slang-autos-libdir: ./lib
+// slang-autos-libext: .v .sv
+// slang-autos-incdir: ./inc
+// slang-autos-indent: 4
+// slang-autos-alignment: false
+// slang-autos-grouping: declaration
+// slang-autos-direction-comments: true
+// slang-autos-strictness: strict
+// slang-autos-verbosity: 2
+// slang-autos-single-unit: false
+// slang-autos-resolved-ranges: true
+)";
+
+    auto config = parseInlineConfig(content);
+
+    CHECK(config.libdirs.size() == 1);
+    CHECK(config.libext.size() == 2);
+    CHECK(config.incdirs.size() == 1);
+    REQUIRE(config.indent.has_value());
+    CHECK(*config.indent == 4);
+    REQUIRE(config.alignment.has_value());
+    CHECK(*config.alignment == false);
+    REQUIRE(config.grouping.has_value());
+    CHECK(*config.grouping == PortGrouping::ByDeclaration);
+    REQUIRE(config.direction_comments.has_value());
+    REQUIRE(config.strictness.has_value());
+    CHECK(*config.strictness == StrictnessMode::Strict);
+    REQUIRE(config.verbosity.has_value());
+    CHECK(*config.verbosity == 2);
+    REQUIRE(config.single_unit.has_value());
+    CHECK(*config.single_unit == false);
+    REQUIRE(config.resolved_ranges.has_value());
+    CHECK(*config.resolved_ranges == true);
 }

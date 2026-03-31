@@ -621,6 +621,25 @@ InlineConfig parseInlineConfig(const std::string& content, const std::string& fi
             } else {
                 warnInvalidValue(key, value, "true, false, yes, no, 1, 0");
             }
+        } else if (key == "verbosity") {
+            try {
+                int val = std::stoi(value);
+                if (val < 0 || val > 2) {
+                    warnInvalidValue(key, value, "0, 1, or 2");
+                } else {
+                    config.verbosity = val;
+                }
+            } catch (...) {
+                warnInvalidValue(key, value, "0, 1, or 2");
+            }
+        } else if (key == "single-unit") {
+            if (value == "true" || value == "1" || value == "yes") {
+                config.single_unit = true;
+            } else if (value == "false" || value == "0" || value == "no") {
+                config.single_unit = false;
+            } else {
+                warnInvalidValue(key, value, "true, false, yes, no, 1, 0");
+            }
         } else if (key == "direction-comments") {
             if (value == "true" || value == "1" || value == "yes") {
                 config.direction_comments = DirectionComments{};
@@ -650,7 +669,7 @@ InlineConfig parseInlineConfig(const std::string& content, const std::string& fi
             if (diagnostics) {
                 diagnostics->addWarning(
                     "Unknown inline config key 'slang-autos-" + key + "'. "
-                    "Valid keys: libdir, libext, incdir, grouping, indent, alignment, strictness, resolved-ranges, direction-comments",
+                    "Valid keys: libdir, libext, incdir, grouping, indent, alignment, strictness, resolved-ranges, direction-comments, verbosity, single-unit",
                     "", 0, "inline_config");
             }
             config.custom_options[key] = value;

@@ -9,8 +9,9 @@
 
 namespace slang_autos {
 
-// Forward declaration
+// Forward declarations
 struct InlineConfig;
+enum class PortGrouping;
 
 /// Per-port direction arrow strings for AUTOINST output.
 /// When present, each port connection line gets a trailing comment.
@@ -20,7 +21,7 @@ struct DirectionComments {
     std::string inout  = "<->";
 };
 
-/// Configuration loaded from a .slang-autos.toml file.
+/// Configuration loaded from a .slang-autos.toml or .slang-autos file.
 /// All fields are optional - missing values use defaults during merge.
 struct FileConfig {
     // [library] section
@@ -31,6 +32,7 @@ struct FileConfig {
     // [formatting] section
     std::optional<int> indent;          ///< Number of spaces (or -1 for tab)
     std::optional<bool> alignment;      ///< Align port names
+    std::optional<PortGrouping> grouping; ///< Port grouping preference
 
     // [behavior] section
     std::optional<StrictnessMode> strictness;
@@ -42,7 +44,7 @@ struct FileConfig {
     /// Check if any configuration was loaded
     [[nodiscard]] bool empty() const {
         return !libdirs && !libext && !incdirs &&
-               !indent && !alignment &&
+               !indent && !alignment && !grouping &&
                !strictness && !verbosity && !single_unit && !resolved_ranges &&
                !direction_comments;
     }
@@ -70,6 +72,7 @@ struct MergedConfig {
     // Formatting (override semantics)
     std::string indent = "  ";      ///< Default: 2 spaces
     bool alignment = true;
+    std::optional<PortGrouping> grouping; ///< Port grouping (nullopt = ByDirection default)
 
     // Behavior (override semantics)
     StrictnessMode strictness = StrictnessMode::Lenient;
@@ -85,7 +88,7 @@ struct MergedConfig {
 /// Loads and merges configuration from multiple sources.
 class ConfigLoader {
 public:
-    static constexpr const char* CONFIG_FILENAME = ".slang-autos.toml";
+    static constexpr const char* CONFIG_FILENAMES[] = {".slang-autos.toml", ".slang-autos"};
 
     /// Find the configuration file by searching:
     /// 1. Starting directory (typically CWD or file's directory)

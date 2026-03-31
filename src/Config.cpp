@@ -1,5 +1,6 @@
 #include "slang-autos/Config.h"
 #include "slang-autos/Parser.h"
+#include "slang-autos/SignalAggregator.h"
 #include "slang-autos/Tool.h"
 
 #include <toml++/toml.hpp>
@@ -21,6 +22,7 @@ AutosToolOptions MergedConfig::toToolOptions() const {
     opts.verbosity = verbosity;
     opts.resolved_ranges = resolved_ranges;
     opts.direction_comments = direction_comments;
+    opts.grouping = grouping;
     return opts;
 }
 
@@ -57,17 +59,26 @@ std::optional<std::filesystem::path> ConfigLoader::findConfigFile(
 
     namespace fs = std::filesystem;
 
+    // Check a directory for any of the valid config filenames
+    auto check_dir = [](const fs::path& dir) -> std::optional<fs::path> {
+        for (const auto* filename : CONFIG_FILENAMES) {
+            fs::path candidate = dir / filename;
+            if (fs::exists(candidate)) {
+                return candidate;
+            }
+        }
+        return std::nullopt;
+    };
+
     // 1. Check starting directory
-    fs::path config_in_start = start_dir / CONFIG_FILENAME;
-    if (fs::exists(config_in_start)) {
-        return config_in_start;
+    if (auto found = check_dir(start_dir)) {
+        return found;
     }
 
     // 2. Check git repository root
     if (auto git_root = findGitRoot(start_dir)) {
-        fs::path config_in_git = *git_root / CONFIG_FILENAME;
-        if (fs::exists(config_in_git)) {
-            return config_in_git;
+        if (auto found = check_dir(*git_root)) {
+            return found;
         }
     }
 
@@ -80,17 +91,56 @@ std::optional<FileConfig> ConfigLoader::loadFile(
 
     FileConfig config;
 
+    // Helper to warn about unknown keys in a TOML table section
+    auto warnUnknownKeys = [&](const toml::table& table,
+                               const std::vector<std::string_view>& known_keys,
+                               const std::string& section_name) {
+        if (!diagnostics) return;
+        for (const auto& [key, val] : table) {
+            bool found = false;
+            for (const auto& known : known_keys) {
+                if (key == known) { found = true; break; }
+            }
+            if (!found) {
+                diagnostics->addWarning(
+                    "Unknown key '" + std::string(key) + "' in [" + section_name + "] section",
+                    config_path.string(), 0, "config");
+            }
+        }
+    };
+
     try {
         toml::table tbl = toml::parse_file(config_path.string());
 
+        // Warn about unknown top-level sections
+        {
+            static constexpr std::string_view known_sections[] = {
+                "library", "formatting", "behavior"
+            };
+            if (diagnostics) {
+                for (const auto& [key, val] : tbl) {
+                    bool found = false;
+                    for (const auto& known : known_sections) {
+                        if (key == known) { found = true; break; }
+                    }
+                    if (!found) {
+                        diagnostics->addWarning(
+                            "Unknown section '[" + std::string(key) + "]' in config file",
+                            config_path.string(), 0, "config");
+                    }
+                }
+            }
+        }
+
         // [library] section
         if (auto library = tbl["library"].as_table()) {
-            // libdirs
-            if (auto arr = (*library)["libdirs"].as_array()) {
+            // libdir
+            if (auto arr = (*library)["libdir"].as_array()) {
                 std::vector<std::string> dirs;
                 for (const auto& elem : *arr) {
                     if (auto str = elem.as_string()) {
-                        dirs.push_back(std::string(str->get()));
+                        dirs.push_back(expandEnvironmentVariables(
+                            std::string(str->get()), diagnostics));
                     }
                 }
                 if (!dirs.empty()) {
@@ -111,18 +161,21 @@ std::optional<FileConfig> ConfigLoader::loadFile(
                 }
             }
 
-            // incdirs
-            if (auto arr = (*library)["incdirs"].as_array()) {
+            // incdir
+            if (auto arr = (*library)["incdir"].as_array()) {
                 std::vector<std::string> dirs;
                 for (const auto& elem : *arr) {
                     if (auto str = elem.as_string()) {
-                        dirs.push_back(std::string(str->get()));
+                        dirs.push_back(expandEnvironmentVariables(
+                            std::string(str->get()), diagnostics));
                     }
                 }
                 if (!dirs.empty()) {
                     config.incdirs = std::move(dirs);
                 }
             }
+
+            warnUnknownKeys(*library, {"libdir", "libext", "incdir"}, "library");
         }
 
         // [formatting] section
@@ -140,6 +193,26 @@ std::optional<FileConfig> ConfigLoader::loadFile(
             if (auto val = (*formatting)["alignment"].as_boolean()) {
                 config.alignment = val->get();
             }
+
+            // grouping
+            if (auto str = (*formatting)["grouping"].as_string()) {
+                std::string_view val = str->get();
+                if (val == "alphabetical" || val == "alpha") {
+                    config.grouping = PortGrouping::Alphabetical;
+                } else if (val == "direction" || val == "bydirection") {
+                    config.grouping = PortGrouping::ByDirection;
+                } else if (val == "declaration" || val == "bydeclaration") {
+                    config.grouping = PortGrouping::ByDeclaration;
+                } else if (diagnostics) {
+                    diagnostics->addWarning(
+                        "Unknown grouping value: " + std::string(val) +
+                        " (expected 'alphabetical', 'alpha', 'direction', 'bydirection', 'declaration', or 'bydeclaration')",
+                        config_path.string(), 0, "config");
+                }
+            }
+
+            warnUnknownKeys(*formatting,
+                {"indent", "alignment", "grouping", "direction_comments"}, "formatting");
 
             // direction_comments: bool (true = defaults) or string ("<- -> <->")
             if (auto val = (*formatting)["direction_comments"].as_boolean()) {
@@ -200,6 +273,9 @@ std::optional<FileConfig> ConfigLoader::loadFile(
             if (auto val = (*behavior)["resolved_ranges"].as_boolean()) {
                 config.resolved_ranges = val->get();
             }
+
+            warnUnknownKeys(*behavior,
+                {"strictness", "verbosity", "single_unit", "resolved_ranges"}, "behavior");
         }
 
         return config;
@@ -257,6 +333,9 @@ MergedConfig ConfigLoader::merge(
         if (file_config->alignment) {
             result.alignment = *file_config->alignment;
         }
+        if (file_config->grouping) {
+            result.grouping = file_config->grouping;
+        }
         if (file_config->strictness) {
             result.strictness = *file_config->strictness;
         }
@@ -298,6 +377,9 @@ MergedConfig ConfigLoader::merge(
     if (inline_config.alignment) {
         result.alignment = *inline_config.alignment;
     }
+    if (inline_config.grouping) {
+        result.grouping = inline_config.grouping;
+    }
     if (inline_config.strictness) {
         result.strictness = *inline_config.strictness;
     }
@@ -306,6 +388,12 @@ MergedConfig ConfigLoader::merge(
     }
     if (inline_config.direction_comments) {
         result.direction_comments = inline_config.direction_comments;
+    }
+    if (inline_config.verbosity) {
+        result.verbosity = *inline_config.verbosity;
+    }
+    if (inline_config.single_unit) {
+        result.single_unit = *inline_config.single_unit;
     }
 
     // Layer 3: CLI options (highest priority)

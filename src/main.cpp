@@ -300,11 +300,19 @@ int main(int argc, char* argv[]) {
     // ========================================================================
 
     std::optional<FileConfig> file_config;
+    std::optional<fs::path> found_config_path;
+    DiagnosticCollector config_diagnostics;
     if (auto config_path = ConfigLoader::findConfigFile()) {
-        file_config = ConfigLoader::loadFile(*config_path);
-        // Note: Library paths from config file should ideally be added to
-        // driver.options before parseAllSources(). For now, we only use
-        // the formatting/behavior options.
+        found_config_path = config_path;
+        file_config = ConfigLoader::loadFile(*config_path, &config_diagnostics);
+
+        // Report config file diagnostics
+        for (const auto& diag : config_diagnostics.diagnostics()) {
+            OS::printE(fmt::format("{}: {}{}\n",
+                diag.level == DiagnosticLevel::Warning ? "warning" : "error",
+                diag.message,
+                diag.file_path.empty() ? "" : " [" + diag.file_path + "]"));
+        }
     }
 
     // ========================================================================
@@ -340,6 +348,33 @@ int main(int argc, char* argv[]) {
     // Apply single_unit setting to slang driver (must be before parseAllSources)
     // This makes macros from includes visible across all files
     driver.options.singleUnit = merged.single_unit;
+
+    // Verbose: report config file discovery
+    if (verbosity >= 2) {
+        if (found_config_path) {
+            OS::print(fmt::format("config: loaded {}\n", found_config_path->string()));
+        } else {
+            OS::print("config: no config file found\n");
+        }
+    }
+
+    // Add library paths from config file to slang driver (must be before parseAllSources)
+    // Resolve relative paths against the config file's directory
+    fs::path config_base_dir = found_config_path
+        ? fs::absolute(*found_config_path).parent_path()
+        : fs::current_path();
+
+    for (const auto& dir : merged.libdirs) {
+        fs::path resolved = (config_base_dir / dir).lexically_normal();
+        driver.sourceLoader.addSearchDirectories(resolved.string());
+    }
+    for (const auto& ext : merged.libext) {
+        driver.sourceLoader.addSearchExtension(ext);
+    }
+    for (const auto& dir : merged.incdirs) {
+        fs::path resolved = (config_base_dir / dir).lexically_normal();
+        driver.sourceManager.addUserDirectories(resolved.string());
+    }
 
     // ========================================================================
     // Check for files to expand
