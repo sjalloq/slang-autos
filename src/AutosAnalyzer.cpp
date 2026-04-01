@@ -20,6 +20,18 @@ using namespace slang::syntax;
 using namespace slang::parsing;
 using namespace slang::ast;
 
+namespace {
+/// Convert NetType enum to the keyword string used in declarations.
+const char* netTypeKeyword(NetType nt) {
+    switch (nt) {
+        case NetType::Wire:      return "wire";
+        case NetType::WireLogic: return "wire logic";
+        case NetType::Logic:
+        default:                 return "logic";
+    }
+}
+} // anonymous namespace
+
 // ════════════════════════════════════════════════════════════════════════════
 // Constructor
 // ════════════════════════════════════════════════════════════════════════════
@@ -830,9 +842,10 @@ void AutosAnalyzer::generateAutoportsReplacement(
     std::ostringstream oss;
 
     bool prefer_original = preferOriginalSyntax();
-    auto fmt = [prefer_original](const std::string& dir, const NetInfo& n) {
+    const char* net_kw = netTypeKeyword(options_.net_type);
+    auto fmt = [prefer_original, net_kw](const std::string& dir, const NetInfo& n) {
         std::ostringstream p;
-        p << dir << " logic";
+        p << dir << " " << net_kw;
         if (!n.getRangeStr(prefer_original).empty()) p << " " << n.getRangeStr(prefer_original);
         p << " " << n.name;
         // Add unpacked array dimensions after the name
@@ -1140,9 +1153,10 @@ std::string AutosAnalyzer::generateAutologicDecls(const CollectedInfo& info) {
 
     bool prefer_original = preferOriginalSyntax();
 
+    const char* net_kw = netTypeKeyword(options_.net_type);
     std::ostringstream oss;
     for (const auto& net : to_declare) {
-        oss << options_.indent << "logic";
+        oss << options_.indent << net_kw;
         if (!net.getRangeStr(prefer_original).empty()) {
             oss << " " << net.getRangeStr(prefer_original);
         }

@@ -53,6 +53,7 @@ struct AutosToolOptions {
     bool resolved_ranges = false; ///< Use resolved widths instead of original syntax
     std::optional<DirectionComments> direction_comments; ///< Per-port direction arrows (nullopt = disabled)
     std::optional<PortGrouping> grouping; ///< Port grouping (nullopt = ByDirection default)
+    NetType net_type = NetType::Logic; ///< Net type for generated declarations
 };
 
 /// Main orchestrator for AUTO macro expansion.

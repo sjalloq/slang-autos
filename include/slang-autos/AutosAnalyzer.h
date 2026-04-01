@@ -31,6 +31,7 @@ struct AutosAnalyzerOptions {
     StrictnessMode strictness{};
     bool resolved_ranges = false; ///< Use resolved widths instead of original syntax
     std::optional<DirectionComments> direction_comments; ///< Per-port direction arrows (nullopt = disabled)
+    NetType net_type = NetType::Logic; ///< Net type for generated declarations
     DiagnosticCollector* diagnostics = nullptr;
 };
 

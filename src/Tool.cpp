@@ -175,6 +175,7 @@ ExpansionResult AutosTool::expandFile(
     } else {
         opts.direction_comments = options_.direction_comments;
     }
+    opts.net_type = inline_config.net_type.value_or(options_.net_type);
     opts.diagnostics = &diagnostics_;
 
     // ─────────────────────────────────────────────────────────────────────────

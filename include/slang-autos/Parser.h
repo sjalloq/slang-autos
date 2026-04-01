@@ -40,6 +40,7 @@ struct InlineConfig {
     std::optional<DirectionComments> direction_comments; ///< Per-port direction arrows
     std::optional<int> verbosity;       ///< Output verbosity (0=quiet, 1=normal, 2=verbose)
     std::optional<bool> single_unit;    ///< Treat all files as single compilation unit
+    std::optional<NetType> net_type;    ///< Net type for generated declarations
     std::unordered_map<std::string, std::string> custom_options; ///< Other options
 
     /// Check if any configuration was found
@@ -49,6 +50,7 @@ struct InlineConfig {
                !alignment.has_value() && !strictness.has_value() &&
                !resolved_ranges.has_value() && !direction_comments.has_value() &&
                !verbosity.has_value() && !single_unit.has_value() &&
+               !net_type.has_value() &&
                custom_options.empty();
     }
 };

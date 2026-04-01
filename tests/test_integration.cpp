@@ -894,6 +894,64 @@ TEST_CASE("AUTOPORTS - basic port generation", "[integration][autoports]") {
     CHECK(result.modified_content.find("data_in") != std::string::npos);
 }
 
+TEST_CASE("AUTOPORTS - wire net_type via inline config", "[integration][autoports]") {
+    auto top_sv = getFixturePath("autoports_wire_nettype/top.sv");
+    auto lib_dir = getFixturePath("autoports_wire_nettype/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    // Set inline config for wire net type (mirrors the comment in the fixture)
+    InlineConfig cfg;
+    cfg.net_type = NetType::Wire;
+    tool.setInlineConfig(top_sv, cfg);
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    CHECK(result.success);
+
+    // AUTOPORTS should use "wire" instead of "logic" due to inline config
+    CHECK(result.modified_content.find("output wire") != std::string::npos);
+    CHECK(result.modified_content.find("input wire") != std::string::npos);
+    // Should NOT contain "logic" in generated ports
+    // The existing manual ports use "wire" too, so no "logic" should appear
+    CHECK(result.modified_content.find("logic") == std::string::npos);
+}
+
+TEST_CASE("AUTOPORTS - wire net_type via tool options", "[integration][autoports]") {
+    auto top_sv = getFixturePath("autoports_basic/top.sv");
+    auto lib_dir = getFixturePath("autoports_basic/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool::Options opts;
+    opts.net_type = NetType::Wire;
+    AutosTool tool(opts);
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    CHECK(result.success);
+
+    // Generated AUTOPORTS should use "wire" instead of "logic"
+    CHECK(result.modified_content.find("output wire") != std::string::npos);
+    CHECK(result.modified_content.find("input wire") != std::string::npos);
+}
+
 TEST_CASE("AUTOPORTS - preserves user-defined ports", "[integration][autoports]") {
     // This tests that user-defined ports before /*AUTOPORTS*/ are preserved.
     // Also tests the case where a signal is connected between submodule I/Os

@@ -664,12 +664,22 @@ InlineConfig parseInlineConfig(const std::string& content, const std::string& fi
                         "true, false, yes, no, 1, 0, or three whitespace-separated tokens (input output inout)");
                 }
             }
+        } else if (key == "net-type") {
+            if (value == "logic") {
+                config.net_type = NetType::Logic;
+            } else if (value == "wire") {
+                config.net_type = NetType::Wire;
+            } else if (value == "wire logic" || value == "wire_logic") {
+                config.net_type = NetType::WireLogic;
+            } else {
+                warnInvalidValue(key, value, "logic, wire, wire logic");
+            }
         } else {
             // Unknown key - warn and store as custom option
             if (diagnostics) {
                 diagnostics->addWarning(
                     "Unknown inline config key 'slang-autos-" + key + "'. "
-                    "Valid keys: libdir, libext, incdir, grouping, indent, alignment, strictness, resolved-ranges, direction-comments, verbosity, single-unit",
+                    "Valid keys: libdir, libext, incdir, grouping, indent, alignment, strictness, resolved-ranges, direction-comments, verbosity, single-unit, net-type",
                     "", 0, "inline_config");
             }
             config.custom_options[key] = value;

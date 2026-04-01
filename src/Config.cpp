@@ -23,6 +23,7 @@ AutosToolOptions MergedConfig::toToolOptions() const {
     opts.resolved_ranges = resolved_ranges;
     opts.direction_comments = direction_comments;
     opts.grouping = grouping;
+    opts.net_type = net_type;
     return opts;
 }
 
@@ -211,8 +212,25 @@ std::optional<FileConfig> ConfigLoader::loadFile(
                 }
             }
 
+            // net_type
+            if (auto str = (*formatting)["net_type"].as_string()) {
+                std::string_view val = str->get();
+                if (val == "logic") {
+                    config.net_type = NetType::Logic;
+                } else if (val == "wire") {
+                    config.net_type = NetType::Wire;
+                } else if (val == "wire logic" || val == "wire_logic") {
+                    config.net_type = NetType::WireLogic;
+                } else if (diagnostics) {
+                    diagnostics->addWarning(
+                        "Unknown net_type value: " + std::string(val) +
+                        " (expected 'logic', 'wire', or 'wire logic')",
+                        config_path.string(), 0, "config");
+                }
+            }
+
             warnUnknownKeys(*formatting,
-                {"indent", "alignment", "grouping", "direction_comments"}, "formatting");
+                {"indent", "alignment", "grouping", "direction_comments", "net_type"}, "formatting");
 
             // direction_comments: bool (true = defaults) or string ("<- -> <->")
             if (auto val = (*formatting)["direction_comments"].as_boolean()) {
@@ -351,6 +369,9 @@ MergedConfig ConfigLoader::merge(
         if (file_config->direction_comments) {
             result.direction_comments = file_config->direction_comments;
         }
+        if (file_config->net_type) {
+            result.net_type = *file_config->net_type;
+        }
     }
 
     // Layer 2: Inline config (overrides file config)
@@ -394,6 +415,9 @@ MergedConfig ConfigLoader::merge(
     }
     if (inline_config.single_unit) {
         result.single_unit = *inline_config.single_unit;
+    }
+    if (inline_config.net_type) {
+        result.net_type = *inline_config.net_type;
     }
 
     // Layer 3: CLI options (highest priority)

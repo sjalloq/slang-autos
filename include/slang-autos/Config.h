@@ -13,6 +13,14 @@ namespace slang_autos {
 struct InlineConfig;
 enum class PortGrouping;
 
+/// Net type keyword used in generated declarations.
+/// Controls what keyword appears in AUTOPORTS and AUTOLOGIC output.
+enum class NetType {
+    Logic,      ///< "logic" (default) - e.g. input logic [7:0] foo
+    Wire,       ///< "wire"  - e.g. input wire [7:0] foo
+    WireLogic,  ///< "wire logic" - e.g. input wire logic [7:0] foo
+};
+
 /// Per-port direction arrow strings for AUTOINST output.
 /// When present, each port connection line gets a trailing comment.
 struct DirectionComments {
@@ -40,13 +48,14 @@ struct FileConfig {
     std::optional<bool> single_unit;    ///< Treat all files as single compilation unit
     std::optional<bool> resolved_ranges;///< Use resolved integer widths instead of original syntax
     std::optional<DirectionComments> direction_comments; ///< Per-port direction arrows
+    std::optional<NetType> net_type; ///< Net type for generated declarations
 
     /// Check if any configuration was loaded
     [[nodiscard]] bool empty() const {
         return !libdirs && !libext && !incdirs &&
                !indent && !alignment && !grouping &&
                !strictness && !verbosity && !single_unit && !resolved_ranges &&
-               !direction_comments;
+               !direction_comments && !net_type;
     }
 };
 
@@ -80,6 +89,7 @@ struct MergedConfig {
     bool single_unit = true;    ///< Default: treat all files as single compilation unit
     bool resolved_ranges = false; ///< Default: preserve original syntax
     std::optional<DirectionComments> direction_comments; ///< Per-port direction arrows (nullopt = disabled)
+    NetType net_type = NetType::Logic; ///< Net type for generated declarations
 
     /// Convert to AutosToolOptions (for use with AutosTool)
     [[nodiscard]] struct AutosToolOptions toToolOptions() const;
