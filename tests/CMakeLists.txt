@@ -8,6 +8,7 @@ add_executable(slang-autos-tests
     test_tool.cpp
     test_integration.cpp
     test_config.cpp
+    test_dotstar_expander.cpp
 )
 
 target_link_libraries(slang-autos-tests

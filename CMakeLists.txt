@@ -89,6 +89,7 @@ add_library(slang-autos-lib
     src/Tool.cpp
     src/AutosAnalyzer.cpp
     src/Config.cpp
+    src/DotStarExpander.cpp
 )
 
 target_include_directories(slang-autos-lib
@@ -116,6 +117,17 @@ target_compile_options(slang-autos-lib PRIVATE
 add_executable(slang-autos src/main.cpp)
 
 target_link_libraries(slang-autos
+    PRIVATE
+        slang-autos-lib
+)
+
+# ============================================================================
+# Dot-Star Expand CLI
+# ============================================================================
+
+add_executable(slang-expand src/main_expand.cpp)
+
+target_link_libraries(slang-expand
     PRIVATE
         slang-autos-lib
 )
@@ -152,7 +164,7 @@ endif()
 
 include(GNUInstallDirs)
 
-install(TARGETS slang-autos
+install(TARGETS slang-autos slang-expand
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
