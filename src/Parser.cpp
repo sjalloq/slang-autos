@@ -1,5 +1,6 @@
 #include "slang-autos/Parser.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <fstream>
 #include <regex>
@@ -268,11 +269,12 @@ std::optional<AutoTemplate> Re2TemplateParser::parseTemplate(
             std::regex test_re(tmpl.instance_pattern);
         } catch (const std::regex_error& e) {
             if (diagnostics_) {
-                diagnostics_->addWarning(
+                diagnostics_->addError(
                     "Invalid regex in AUTO_TEMPLATE instance pattern '" +
                     tmpl.instance_pattern + "': " + e.what(),
                     file_path, line, "template_regex");
             }
+            return std::nullopt;
         }
     }
 
@@ -289,20 +291,50 @@ std::optional<AutoTemplate> Re2TemplateParser::parseTemplate(
     std::sregex_iterator rule_it(rest.begin(), rest.end(), rule_re);
     std::sregex_iterator rule_end;
 
+    size_t rest_offset_in_text = header_match.position() + header_match.length();
+    bool has_rule_error = false;
+
     for (; rule_it != rule_end; ++rule_it) {
         std::string port_pattern = (*rule_it)[1].str();
         std::string signal_expr = (*rule_it)[2].str();
 
+        size_t abs_pos = rest_offset_in_text + static_cast<size_t>(rule_it->position());
+        size_t rule_line = line + static_cast<size_t>(
+            std::count(text_str.begin(), text_str.begin() + abs_pos, '\n'));
+
         // Strip Verilog-style comments from signal expression
         signal_expr = stripComments(signal_expr);
 
-        // Strip trailing comma from signal expression (verilog-mode compatibility)
+        // Strip trailing comma (harmless, aids paste-from-verilog-mode)
         if (!signal_expr.empty() && signal_expr.back() == ',') {
             signal_expr.pop_back();
-            // Also trim any trailing whitespace that was before the comma
             while (!signal_expr.empty() && std::isspace(signal_expr.back())) {
                 signal_expr.pop_back();
             }
+        }
+
+        // Parentheses in signal_expr must be balanced. Math functions like
+        // add(@, 1) are balanced; a stray trailing ')' (common typo when
+        // copying ports from an instance) is not, and would generate broken
+        // SystemVerilog if silently accepted.
+        int balance = 0;
+        bool paren_error = false;
+        for (char c : signal_expr) {
+            if (c == '(') {
+                ++balance;
+            } else if (c == ')') {
+                if (--balance < 0) { paren_error = true; break; }
+            }
+        }
+        if (paren_error || balance != 0) {
+            if (diagnostics_) {
+                diagnostics_->addError(
+                    "Unbalanced parentheses in AUTO_TEMPLATE rule '" +
+                    port_pattern + " => " + signal_expr + "'",
+                    file_path, rule_line, "template_syntax");
+            }
+            has_rule_error = true;
+            continue;
         }
 
         // Validate port pattern is valid regex
@@ -310,15 +342,69 @@ std::optional<AutoTemplate> Re2TemplateParser::parseTemplate(
             std::regex test_re(port_pattern);
         } catch (const std::regex_error& e) {
             if (diagnostics_) {
-                diagnostics_->addWarning(
+                diagnostics_->addError(
                     "Invalid regex in template rule port pattern '" +
                     port_pattern + "': " + e.what(),
-                    file_path, line, "template_regex");
+                    file_path, rule_line, "template_regex");
             }
-            continue;  // Skip this rule
+            has_rule_error = true;
+            continue;
         }
 
         tmpl.rules.emplace_back(port_pattern, signal_expr);
+    }
+
+    // Every line in the template body must be a rule, blank, or a // comment.
+    // Anything else (stray '(' or ');' from verilog-mode wrapping, misspelled
+    // '=' instead of '=>', pasted garbage) is rejected so it can't be parsed
+    // silently. Note that parens are still allowed in legitimate places: the
+    // instance_pattern regex on the header (already consumed by header_match)
+    // and balanced parens inside signal_expr (e.g. add(@, 1)).
+    size_t line_start = 0;
+    while (line_start <= rest.size()) {
+        size_t line_end = rest.find('\n', line_start);
+        if (line_end == std::string::npos) line_end = rest.size();
+
+        std::string_view body(rest.data() + line_start, line_end - line_start);
+
+        // Trim leading whitespace
+        std::string_view trimmed = body;
+        while (!trimmed.empty() &&
+               std::isspace(static_cast<unsigned char>(trimmed.front()))) {
+            trimmed.remove_prefix(1);
+        }
+
+        bool is_blank = trimmed.empty();
+        bool is_line_comment = trimmed.substr(0, 2) == "//";
+
+        bool is_rule = false;
+        if (!is_blank && !is_line_comment) {
+            std::cmatch m;
+            is_rule = std::regex_match(body.begin(), body.end(), m, rule_re);
+        }
+
+        if (!is_blank && !is_line_comment && !is_rule) {
+            size_t abs_pos = rest_offset_in_text + line_start;
+            size_t bad_line = line + static_cast<size_t>(
+                std::count(text_str.begin(), text_str.begin() + abs_pos, '\n'));
+            if (diagnostics_) {
+                diagnostics_->addError(
+                    "Unexpected content in AUTO_TEMPLATE body: '" +
+                    std::string(trimmed) +
+                    "' (expected 'port => signal' rule, // comment, or blank line)",
+                    file_path, bad_line, "template_syntax");
+            }
+            has_rule_error = true;
+        }
+
+        if (line_end == rest.size()) break;
+        line_start = line_end + 1;
+    }
+
+    // Reject the whole template if any rule failed to parse — partial
+    // templates silently dropping rules is worse than no template at all.
+    if (has_rule_error) {
+        return std::nullopt;
     }
 
     // Warn if template has no rules

@@ -187,6 +187,50 @@ TEST_CASE("Integration - template with @ substitution", "[integration][templates
     CHECK(result.modified_content.find("data_1_out") != std::string::npos);
 }
 
+TEST_CASE("Integration - template with unbalanced paren reports error", "[integration][templates]") {
+    // A common typo: copying ".port(net)" from an instance into a template and
+    // converting to "port => net" can leave a stray trailing ')'. The parser
+    // must reject the template loudly rather than silently stripping the paren
+    // (which hid the typo) or emitting broken SystemVerilog.
+    auto top_sv = getFixturePath("template_trailing_paren/top.sv");
+    auto lib_dir = getFixturePath("template_trailing_paren/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, true);
+
+    // The bad template is rejected wholesale — none of its rules apply, so
+    // the generated instance must connect ports to their default same-name
+    // signals rather than the template's rename targets (sig_a / sig_b / sig_c).
+    CHECK(result.modified_content.find(".data_in  (data_in)") != std::string::npos);
+    CHECK(result.modified_content.find(".data_out (data_out)") != std::string::npos);
+    CHECK(result.modified_content.find(".enable   (enable)") != std::string::npos);
+    CHECK(result.modified_content.find("(sig_a)") == std::string::npos);
+    CHECK(result.modified_content.find("(sig_b)") == std::string::npos);
+    CHECK(result.modified_content.find("(sig_c)") == std::string::npos);
+
+    // A diagnostic pointing at the offending rule must be raised.
+    bool found_error = false;
+    for (const auto& d : tool.diagnostics().diagnostics()) {
+        if (d.type == "template_syntax" &&
+            d.message.find("Unbalanced parentheses") != std::string::npos) {
+            found_error = true;
+            break;
+        }
+    }
+    CHECK(found_error);
+}
+
 TEST_CASE("Integration - multiple templates for same module uses closest preceding", "[integration][templates]") {
     // This tests verilog-mode semantics: each instance should use the closest
     // preceding template for that module, not the first one in the file.

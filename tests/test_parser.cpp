@@ -53,10 +53,10 @@ TEST_CASE("AutoParser - parse AUTO_TEMPLATE", "[parser]") {
 
     SECTION("Template without instance pattern") {
         parser.parseText(R"(
-            /* submod AUTO_TEMPLATE (
+            /* submod AUTO_TEMPLATE
                data_in => my_data_in
                data_out => my_data_out
-            ); */
+            */
         )");
 
         REQUIRE(parser.templates().size() == 1);
@@ -66,6 +66,99 @@ TEST_CASE("AutoParser - parse AUTO_TEMPLATE", "[parser]") {
         REQUIRE(tmpl.rules.size() == 2);
         CHECK(tmpl.rules[0].port_pattern == "data_in");
         CHECK(tmpl.rules[0].signal_expr == "my_data_in");
+    }
+
+    SECTION("Verilog-mode wrapper parens are rejected") {
+        parser.parseText(R"(
+            /* submod AUTO_TEMPLATE (
+               data_in => my_data_in
+               data_out => my_data_out
+            ); */
+        )");
+
+        CHECK(parser.templates().empty());
+        CHECK(diag.errorCount() > 0);
+
+        bool found = false;
+        for (const auto& d : diag.diagnostics()) {
+            if (d.type == "template_syntax" &&
+                d.message.find("Unexpected content") != std::string::npos) {
+                found = true;
+                break;
+            }
+        }
+        CHECK(found);
+    }
+
+    SECTION("Invalid instance pattern regex rejects template") {
+        parser.parseText(R"sv(
+            /* submod AUTO_TEMPLATE "u_["
+               data_in => sig_a
+            */
+        )sv");
+
+        CHECK(parser.templates().empty());
+        CHECK(diag.errorCount() > 0);
+
+        bool found = false;
+        for (const auto& d : diag.diagnostics()) {
+            if (d.type == "template_regex" &&
+                d.message.find("instance pattern") != std::string::npos) {
+                found = true;
+                break;
+            }
+        }
+        CHECK(found);
+    }
+
+    SECTION("Balanced parentheses in signal expression are preserved") {
+        parser.parseText(R"sv(
+            /* submod AUTO_TEMPLATE
+               data_([0-9]) => net_add($1, 1)
+               mode => (a | b)
+            */
+        )sv");
+
+        REQUIRE(parser.templates().size() == 1);
+        auto& tmpl = parser.templates()[0];
+        REQUIRE(tmpl.rules.size() == 2);
+        CHECK(tmpl.rules[0].signal_expr == "net_add($1, 1)");
+        CHECK(tmpl.rules[1].signal_expr == "(a | b)");
+        CHECK(diag.errorCount() == 0);
+    }
+
+    SECTION("Unbalanced trailing paren rejects whole template") {
+        parser.parseText(R"(
+            /* submod AUTO_TEMPLATE
+               data_in  => sig_a
+               data_out => sig_b
+               enable   => sig_c)
+            */
+        )");
+
+        CHECK(parser.templates().empty());
+        CHECK(diag.errorCount() > 0);
+
+        bool found = false;
+        for (const auto& d : diag.diagnostics()) {
+            if (d.type == "template_syntax" &&
+                d.message.find("Unbalanced parentheses") != std::string::npos) {
+                found = true;
+                break;
+            }
+        }
+        CHECK(found);
+    }
+
+    SECTION("Unbalanced leading paren rejects whole template") {
+        parser.parseText(R"(
+            /* submod AUTO_TEMPLATE
+               data_in => (sig_a
+            */
+        )");
+
+        CHECK(parser.templates().empty());
+        CHECK(diag.errorCount() > 0);
     }
 }
 
