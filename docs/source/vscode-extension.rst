@@ -1,6 +1,6 @@
-==========================
+=============================
 VSCode Extension Architecture
-==========================
+=============================
 
 This document describes the architecture of the slang-autos VSCode extension,
 following Microsoft's recommended patterns for Language Server Protocol (LSP)
@@ -36,7 +36,7 @@ Architecture Diagram
    │  │  ┌─────────────────────────────────────────────────────┐  │  │
    │  │  │              slang-autos Extension                  │  │  │
    │  │  │                                                     │  │  │
-   │  │  │  User Action (Ctrl+Shift+A)                         │  │  │
+   │  │  │  User Action (Ctrl+Shift+A / Cmd+Shift+A)           │  │  │
    │  │  │         │                                           │  │  │
    │  │  │         ▼                                           │  │  │
    │  │  │  slang-autos.expand (UI command)                    │  │  │
@@ -92,6 +92,16 @@ These are registered in ``package.json`` and appear in the command palette:
        {
          "command": "slang-autos.expand",
          "title": "Expand AUTOs",
+         "category": "slang-autos"
+       },
+       {
+         "command": "slang-autos.delete",
+         "title": "Delete AUTOs",
+         "category": "slang-autos"
+       },
+       {
+         "command": "slang-autos.restartServer",
+         "title": "Restart Language Server",
          "category": "slang-autos"
        }
      ]
@@ -202,7 +212,8 @@ package.json
          {
            "command": "slang-autos.expand",
            "key": "ctrl+shift+a",
-           "when": "editorTextFocus && editorLangId == systemverilog"
+           "mac": "cmd+shift+a",
+           "when": "editorTextFocus && (editorLangId == verilog || editorLangId == systemverilog)"
          }
        ]
      }

@@ -29,29 +29,36 @@ cmake --build build --target slang-autos-tests # Test suite
 
 ### Core Components (src/, include/slang-autos/)
 
-- **Parser** (`Parser.h/cpp`): Parses AUTO comments from SystemVerilog source using slang's trivia API. Handles AUTO_TEMPLATE, AUTOINST, AUTOWIRE, AUTOREG, AUTOPORTS, AUTOINPUT, AUTOOUTPUT, AUTOINOUT.
+- **Parser** (`Parser.h/cpp`): Parses AUTO comments from SystemVerilog source using slang's trivia API. Handles `AUTO_TEMPLATE`, `/*AUTOINST*/`, `/*AUTOLOGIC*/`, `/*AUTOPORTS*/`. Legacy Verilog markers (AUTOWIRE, AUTOREG, AUTOINPUT, AUTOOUTPUT, AUTOINOUT) are not supported — use AUTOLOGIC / AUTOPORTS instead (see `Constants.h`).
 
-- **TemplateMatcher** (`TemplateMatcher.h/cpp`): Matches ports against template rules and performs variable substitution. Supports port captures (`$1`, `$2`), instance captures (`%1`, `%2`, `@`), built-in variables (`port.name`, `port.width`, `inst.name`), and math functions (`add`, `sub`, `mul`, `div`, `mod`).
+- **TemplateMatcher** (`TemplateMatcher.h/cpp`): Matches ports against template rules and performs variable substitution. Uses `std::regex` (ECMAScript). Supports port captures (`$1`, `$2`), instance captures (`%1`, `%2`, `@`), built-in variables (`port.name`, `port.width`, `inst.name`), and math functions (`add`, `sub`, `mul`, `div`, `mod`).
 
-- **Expander** (`Expander.h/cpp`): Expands AUTO macros into generated code. Contains `AutoInstExpander`, `AutoWireExpander`, `AutoRegExpander`, `AutoPortsExpander`. Uses `SignalAggregator` to track net usage across all instances.
+- **AutosAnalyzer** (`AutosAnalyzer.h/cpp`): The expansion engine. Walks the slang AST to collect AUTOINST / AUTOLOGIC / AUTOPORTS sites and generates `Replacement` structs. Uses `SignalAggregator` to track net usage across all instances.
+
+- **DotStarExpander** (`DotStarExpander.h/cpp`): Expands SystemVerilog `.*` port wildcards into explicit `.port(port)` connections. Used by the separate `slang-expand` binary.
 
 - **Writer** (`Writer.h/cpp`): Handles text replacement operations. Manages `Replacement` structs that track offset, length, and replacement text.
 
 - **Tool** (`Tool.h/cpp`): Main orchestrator (`AutosTool` class). Coordinates slang compilation, parsing, template matching, expansion, and file writing. Uses slang's Driver for command-line argument parsing.
 
-- **AutowireRewriter/AutosRewriter**: Use slang's SyntaxRewriter to apply replacements while preserving syntax structure.
+### Binaries
+
+- **slang-autos** (`src/main.cpp`): CLI for AUTO macro expansion.
+- **slang-expand** (`src/main_expand.cpp`): CLI for `.*` dot-star port wildcard expansion.
+- **slang-autos-lsp** (`extensions/lsp/main.cpp`): LSP server.
 
 ### LSP Extension (extensions/lsp/)
 
-- **JsonRpc/JsonRpcServer**: JSON-RPC 2.0 protocol implementation over stdio
-- **LspServer/AutosServer**: LSP protocol handler with `slangAutos/expand` and `slangAutos/delete` custom commands
-- **LspTypes/JsonTypes**: LSP protocol type definitions using reflect-cpp for JSON serialization
+- **AutosServer**: LSP protocol handler. Exposes `slang-autos.expandAutos` and `slang-autos.deleteAutos` via the standard `workspace/executeCommand` mechanism (advertised in `executeCommandProvider`).
 
 ### VSCode Extension (extensions/vscode/)
 
-TypeScript extension that connects to the LSP server. Key commands:
-- `slang-autos.expand` (Ctrl+Shift+A): Expand AUTOs
+TypeScript extension that connects to the LSP server. Key UI commands (defined in `extensions/vscode/package.json`):
+- `slang-autos.expand` (Ctrl+Shift+A / Cmd+Shift+A): Expand AUTOs
 - `slang-autos.delete`: Delete AUTO-generated content
+- `slang-autos.restartServer`: Restart the language server
+
+The UI commands delegate to the server-side `slang-autos.expandAutos` / `slang-autos.deleteAutos` commands via `workspace/executeCommand`.
 
 ## Key Dependencies
 

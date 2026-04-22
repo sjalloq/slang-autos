@@ -7,7 +7,7 @@
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 project = 'slang-autos'
-copyright = '2025, Shareef Jalloq'
+copyright = '2025-2026, Shareef Jalloq'
 author = 'Shareef Jalloq'
 
 # -- General configuration ---------------------------------------------------

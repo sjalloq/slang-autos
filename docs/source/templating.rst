@@ -551,10 +551,27 @@ your regex has enough capture groups.
 
 .. code-block:: text
 
-   Warning: Invalid regex pattern in template
+   Error: Invalid regex pattern in template
 
-The regex syntax is invalid. slang-autos uses RE2 regex syntax, which differs
-slightly from Perl-compatible regex.
+The regex syntax is invalid. slang-autos uses ``std::regex`` (ECMAScript
+syntax), which differs slightly from Perl-compatible regex. An invalid regex in
+the instance pattern is a hard error and the whole template is rejected; an
+invalid regex in a port pattern is a warning and that rule is skipped.
+
+**Malformed template**
+
+.. code-block:: text
+
+   Error: AUTO_TEMPLATE ... rejected
+
+Templates are parsed strictly. The following are hard errors (the entire
+template block is rejected):
+
+- Legacy ``verilog-mode``-style wrapper parens around the template body
+  (``AUTO_TEMPLATE(...)``).
+- Stray trailing ``)`` on rule signals (these used to be silently stripped,
+  which would have broken expressions like ``add(@, 1)``).
+- Invalid regex in the instance pattern (as above).
 
 **Constant assigned to output**
 

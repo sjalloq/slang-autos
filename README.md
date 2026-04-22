@@ -53,8 +53,25 @@ slang-autos design.sv --dry-run
 # Show diff
 slang-autos design.sv --diff
 
+# Check if files need changes (exit 1 if changes needed; useful for CI)
+slang-autos design.sv --check
+
+# Remove all AUTO expansion blocks, leaving only the markers
+slang-autos design.sv --clean
+
 # Strict mode (error on missing modules)
 slang-autos design.sv --strict
+```
+
+### Dot-star expansion (`slang-expand`)
+
+A companion tool, `slang-expand`, expands SystemVerilog `.*` port wildcards into
+explicit `.port_name(port_name)` connections. It accepts the same file/library
+arguments and the `--dry-run`, `--diff`, `--check`, `--strict`, and
+`--no-alignment` flags as `slang-autos`.
+
+```bash
+slang-expand design.sv
 ```
 
 ## Template Syntax
@@ -140,7 +157,9 @@ See the main [documentation](https://sjalloq.github.io/slang-autos/) for many mo
 2. **Inline comments** (`// slang-autos-KEY: VALUE`) — per-file overrides
 3. **CLI flags** — highest priority
 
-Library paths (`libdirs`, `libext`, `incdirs`) are **additive** across all layers. All other options use **override** semantics.
+Library paths (`libdir`, `libext`, `incdir`) are **additive** across all layers. All other options use **override** semantics.
+
+Environment variables (`$VAR` or `${VAR}`) are expanded in `libdir` and `incdir` values, in both the TOML config file and inline comments.
 
 ### Config File
 
@@ -160,6 +179,7 @@ incdir = ["include/"]                # +incdir+ equivalents
 indent    = 2                        # Number of spaces (or "tab")
 alignment = true                     # Align port names in columns
 grouping  = "direction"              # Port ordering: "alphabetical", "direction", "declaration"
+net_type  = "logic"                  # AUTOLOGIC net type: "logic", "wire", or "wire logic"
 
 # Direction comments on AUTOINST port connections
 # Can be: true (defaults: <- -> <->), false, or custom tokens
@@ -190,6 +210,7 @@ Per-file overrides using single-line comments. Environment variables (`$VAR` or 
 // slang-autos-resolved-ranges: true
 // slang-autos-direction-comments: true
 // slang-autos-direction-comments: IN OUT INOUT
+// slang-autos-net-type: logic
 ```
 
 The `grouping` option controls port ordering in `AUTOPORTS` expansion:
