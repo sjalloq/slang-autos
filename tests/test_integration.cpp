@@ -2400,3 +2400,486 @@ TEST_CASE("Integration - grandchild errors should not block top expansion", "[in
     CHECK(autoports_section.find("data_in") != std::string::npos);
     CHECK(autoports_section.find("data_out") != std::string::npos);
 }
+
+// =============================================================================
+// Instance array support (InstanceArraySymbol handling)
+// =============================================================================
+
+TEST_CASE("Integration - instance array AUTOINST/AUTOPORTS", "[integration][instance_array]") {
+    auto top_sv = getFixturePath("instance_array/top.sv");
+    auto lib_dir = getFixturePath("instance_array/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    REQUIRE(tool.loadWithArgs({top_sv.string(), "-y", lib_dir.string(), "+libext+.sv"}));
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    CHECK(result.success);
+    CHECK(result.autoinst_count == 1);
+
+    // Instance array syntax sync_pulse sync_arr[2:0] must still let AUTOINST
+    // find the module definition and wire its ports.
+    CHECK(result.modified_content.find(".clk") != std::string::npos);
+    CHECK(result.modified_content.find(".rst_n") != std::string::npos);
+    CHECK(result.modified_content.find(".data_in") != std::string::npos);
+    CHECK(result.modified_content.find(".data_out") != std::string::npos);
+    CHECK(result.modified_content.find(".valid") != std::string::npos);
+
+    // AUTOPORTS must also pick up all ports through the array instance.
+    auto autoports_end = result.modified_content.find(");");
+    auto header = result.modified_content.substr(0, autoports_end);
+    CHECK(header.find("clk") != std::string::npos);
+    CHECK(header.find("data_out") != std::string::npos);
+    CHECK(header.find("valid") != std::string::npos);
+}
+
+// =============================================================================
+// Struct-typed ports: AUTOPORTS must not expand struct members as ports
+// =============================================================================
+
+TEST_CASE("Integration - struct port not expanded to members (typedef visible)", "[integration][autoports][struct]") {
+    auto top_sv = getFixturePath("autoports_struct/top.sv");
+    auto lib_dir = getFixturePath("autoports_struct/lib");
+
+    REQUIRE(fs::exists(top_sv));
+
+    AutosTool tool;
+    REQUIRE(tool.loadWithArgs({top_sv.string(), "-y", lib_dir.string(), "+libext+.sv"}));
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    CHECK(result.success);
+
+    // field_a / field_b exist in the typedef at file scope; the assertion is
+    // that they don't leak into the module port list as separate ports.
+    auto mod_start = result.modified_content.find("module top");
+    auto ports_end = result.modified_content.find(");", mod_start);
+    REQUIRE(mod_start != std::string::npos);
+    REQUIRE(ports_end != std::string::npos);
+    auto port_list = result.modified_content.substr(mod_start, ports_end - mod_start);
+    CHECK(port_list.find("field_a") == std::string::npos);
+    CHECK(port_list.find("field_b") == std::string::npos);
+
+    // AUTOINST should wire the instance with the struct as a whole.
+    CHECK(result.modified_content.find(".data_in  (data_in)") != std::string::npos);
+    CHECK(result.modified_content.find(".data_out (data_out)") != std::string::npos);
+}
+
+TEST_CASE("Integration - struct port width aggregation when typedef not in scope", "[integration][autoports][struct]") {
+    auto top_sv = getFixturePath("autoports_struct/top2.sv");
+    auto lib_dir = getFixturePath("autoports_struct/lib");
+
+    REQUIRE(fs::exists(top_sv));
+
+    AutosTool tool;
+    REQUIRE(tool.loadWithArgs({top_sv.string(), "-y", lib_dir.string(), "+libext+.sv"}));
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    CHECK(result.success);
+
+    // Struct is [7:0] + [3:0] = 12 bits. Without typedef visible at top2 scope,
+    // AUTOPORTS falls back to a packed [11:0] vector rather than exploding
+    // the struct into its members.
+    CHECK(result.modified_content.find("field_a") == std::string::npos);
+    CHECK(result.modified_content.find("field_b") == std::string::npos);
+    CHECK(result.modified_content.find("[11:0] data_out") != std::string::npos);
+    CHECK(result.modified_content.find("[11:0] data_in") != std::string::npos);
+}
+
+TEST_CASE("Integration - struct member substitution in template rule", "[integration][templates][struct]") {
+    auto top_sv = getFixturePath("autoports_struct_member/top.sv");
+    auto lib_dir = getFixturePath("autoports_struct_member/lib");
+
+    REQUIRE(fs::exists(top_sv));
+
+    AutosTool tool;
+    REQUIRE(tool.loadWithArgs({top_sv.string(), "-y", lib_dir.string(), "+libext+.sv"}));
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    CHECK(result.success);
+
+    // Template maps the child's scalar ports a, b to struct members my_type.a, my_type.b.
+    CHECK(result.modified_content.find(".a (my_type.a)") != std::string::npos);
+    CHECK(result.modified_content.find(".b (my_type.b)") != std::string::npos);
+
+    // AUTOPORTS must not add a standalone 'a' or 'b' port — they're consumed
+    // from the struct the user already declared.
+    auto header_end = result.modified_content.find(");");
+    auto header = result.modified_content.substr(0, header_end);
+    CHECK(header.find(" a,") == std::string::npos);
+    CHECK(header.find(" b,") == std::string::npos);
+    CHECK(header.find(" a\n") == std::string::npos);
+    CHECK(header.find(" b\n") == std::string::npos);
+}
+
+// =============================================================================
+// Template rename with capture groups feeds AUTOPORTS aggregation
+// =============================================================================
+
+TEST_CASE("Integration - template captures aggregate to packed AUTOPORTS input", "[integration][autoports][templates]") {
+    auto top_sv = getFixturePath("autoports_template_rename/top.sv");
+    auto lib_dir = getFixturePath("autoports_template_rename/lib");
+
+    REQUIRE(fs::exists(top_sv));
+
+    AutosTool tool;
+    REQUIRE(tool.loadWithArgs({top_sv.string(), "-y", lib_dir.string(), "+libext+.sv"}));
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    CHECK(result.success);
+
+    // Child has data_in0, data_in1 and data_out0, data_out1 (2 each).
+    // Template renames them to indexed accesses of data_in/data_out.
+    // AUTOPORTS must aggregate the bit-selects into a [1:0] packed vector.
+    CHECK(result.modified_content.find("[1:0] data_in") != std::string::npos);
+    CHECK(result.modified_content.find("[1:0] data_out") != std::string::npos);
+
+    // Instance connections use the aggregated signal indexed by position.
+    CHECK(result.modified_content.find(".data_in0  (data_in[0])") != std::string::npos);
+    CHECK(result.modified_content.find(".data_in1  (data_in[1])") != std::string::npos);
+    CHECK(result.modified_content.find(".data_out0 (data_out[0])") != std::string::npos);
+    CHECK(result.modified_content.find(".data_out1 (data_out[1])") != std::string::npos);
+}
+
+TEST_CASE("Integration - template with long port prefix and capture", "[integration][autoports][templates]") {
+    auto top_sv = getFixturePath("autoports_template_rename/top2.sv");
+    auto lib_dir = getFixturePath("autoports_template_rename/lib");
+
+    REQUIRE(fs::exists(top_sv));
+
+    AutosTool tool;
+    REQUIRE(tool.loadWithArgs({top_sv.string(), "-y", lib_dir.string(), "+libext+.sv"}));
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    CHECK(result.success);
+
+    // child2 has amf_msi_rc_int0_csr_fifo_ovrflw_in ... _int3_... (4 ports).
+    // Template renames them to amf_rc_int_ovrflw[$1]; AUTOPORTS should aggregate.
+    CHECK(result.modified_content.find("[3:0] amf_rc_int_ovrflw") != std::string::npos);
+    CHECK(result.modified_content.find(".amf_msi_rc_int0_csr_fifo_ovrflw_in (amf_rc_int_ovrflw[0])") != std::string::npos);
+    CHECK(result.modified_content.find(".amf_msi_rc_int3_csr_fifo_ovrflw_in (amf_rc_int_ovrflw[3])") != std::string::npos);
+}
+
+TEST_CASE("Integration - template captures on output ports", "[integration][autoports][templates]") {
+    auto top_sv = getFixturePath("autoports_template_rename/top3.sv");
+    auto lib_dir = getFixturePath("autoports_template_rename/lib");
+
+    REQUIRE(fs::exists(top_sv));
+
+    AutosTool tool;
+    REQUIRE(tool.loadWithArgs({top_sv.string(), "-y", lib_dir.string(), "+libext+.sv"}));
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    CHECK(result.success);
+
+    // child3 has data_out0..data_out3 (outputs). Template aggregates them.
+    CHECK(result.modified_content.find("output logic [3:0] data_out") != std::string::npos);
+    CHECK(result.modified_content.find(".data_out0 (data_out[0])") != std::string::npos);
+    CHECK(result.modified_content.find(".data_out3 (data_out[3])") != std::string::npos);
+}
+
+TEST_CASE("Integration - template part-select width aggregation", "[integration][autoports][templates]") {
+    auto top_sv = getFixturePath("autoports_template_rename/top_partsel.sv");
+    auto lib_dir = getFixturePath("autoports_template_rename/lib");
+
+    REQUIRE(fs::exists(top_sv));
+
+    AutosTool tool;
+    REQUIRE(tool.loadWithArgs({top_sv.string(), "-y", lib_dir.string(), "+libext+.sv"}));
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    CHECK(result.success);
+
+    // Two 32-bit ports mapped to cxpl_debug_info[31:0] and [63:32] should
+    // aggregate into a single 64-bit input.
+    CHECK(result.modified_content.find("[63:0] cxpl_debug_info") != std::string::npos);
+    CHECK(result.modified_content.find(".debug_info_l (cxpl_debug_info[31:0])") != std::string::npos);
+    CHECK(result.modified_content.find(".debug_info_h (cxpl_debug_info[63:32])") != std::string::npos);
+}
+
+// =============================================================================
+// Packed-array output driven through template: don't duplicate as input
+// =============================================================================
+
+TEST_CASE("Integration - packed-array output not duplicated as input (marker at end)", "[integration][autoports][packed_array]") {
+    auto top_sv = getFixturePath("autoports_packed_array/top.sv");
+    auto lib_dir = getFixturePath("autoports_packed_array/lib");
+
+    REQUIRE(fs::exists(top_sv));
+
+    AutosTool tool;
+    REQUIRE(tool.loadWithArgs({top_sv.string(), "-y", lib_dir.string(), "+libext+.sv"}));
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    CHECK(result.success);
+
+    // User manually declared `output logic [NumItems-1:0][2:0] data_out`.
+    // AUTOPORTS must NOT add it again (as input or output) since it's already present.
+    auto autoports_end = result.modified_content.find(");");
+    auto header = result.modified_content.substr(0, autoports_end);
+
+    // The manual output declaration should survive exactly once.
+    size_t first = header.find("data_out");
+    REQUIRE(first != std::string::npos);
+    CHECK(header.find("data_out", first + 1) == std::string::npos);
+
+    // Template should still drive child inputs from data_out bit-selects.
+    CHECK(result.modified_content.find(".data_in0 (data_out[0])") != std::string::npos);
+    CHECK(result.modified_content.find(".data_in3 (data_out[3])") != std::string::npos);
+}
+
+TEST_CASE("Integration - 2D packed-array output not duplicated (spaced dims)", "[integration][autoports][packed_array]") {
+    auto top_sv = getFixturePath("autoports_packed_array/top2.sv");
+    auto lib_dir = getFixturePath("autoports_packed_array/lib");
+
+    REQUIRE(fs::exists(top_sv));
+
+    AutosTool tool;
+    REQUIRE(tool.loadWithArgs({top_sv.string(), "-y", lib_dir.string(), "+libext+.sv"}));
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    CHECK(result.success);
+
+    auto autoports_end = result.modified_content.find(");");
+    auto header = result.modified_content.substr(0, autoports_end);
+    size_t first = header.find("data_out");
+    REQUIRE(first != std::string::npos);
+    CHECK(header.find("data_out", first + 1) == std::string::npos);
+}
+
+TEST_CASE("Integration - packed-array output under realistic parameter name", "[integration][autoports][packed_array]") {
+    auto top_sv = getFixturePath("autoports_packed_array/top3.sv");
+    auto lib_dir = getFixturePath("autoports_packed_array/lib");
+
+    REQUIRE(fs::exists(top_sv));
+
+    AutosTool tool;
+    REQUIRE(tool.loadWithArgs({top_sv.string(), "-y", lib_dir.string(), "+libext+.sv"}));
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    CHECK(result.success);
+
+    auto autoports_end = result.modified_content.find(");");
+    auto header = result.modified_content.substr(0, autoports_end);
+    size_t first = header.find("amf_rc_int_fifo_level");
+    REQUIRE(first != std::string::npos);
+    CHECK(header.find("amf_rc_int_fifo_level", first + 1) == std::string::npos);
+
+    CHECK(result.modified_content.find(".data_in0 (amf_rc_int_fifo_level[0])") != std::string::npos);
+}
+
+TEST_CASE("Integration - port declared after AUTOPORTS marker is regenerated", "[integration][autoports][packed_array]") {
+    // top4.sv has a manual output declared AFTER the /*AUTOPORTS*/ marker.
+    // Content after the marker is part of AUTOPORTS-owned territory, so the
+    // manual declaration is overwritten when the marker is re-expanded. This
+    // locks in that semantics — put manual declarations BEFORE the marker.
+    auto top_sv = getFixturePath("autoports_packed_array/top4.sv");
+    auto lib_dir = getFixturePath("autoports_packed_array/lib");
+
+    REQUIRE(fs::exists(top_sv));
+
+    AutosTool tool;
+    REQUIRE(tool.loadWithArgs({top_sv.string(), "-y", lib_dir.string(), "+libext+.sv"}));
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    CHECK(result.success);
+
+    // After expansion, the manual `output logic [NumRcInt-1:0][2:0]` is gone;
+    // the signal appears as an AUTOPORTS-generated input matching child usage.
+    CHECK(result.modified_content.find("output logic [NumRcInt-1:0]") == std::string::npos);
+    CHECK(result.modified_content.find("input logic [3:0] amf_rc_int_fifo_level") != std::string::npos);
+}
+
+TEST_CASE("Integration - manual ports mixed around AUTOPORTS marker", "[integration][autoports][packed_array]") {
+    // top5.sv: clk, output, reset_n declared BEFORE marker. AUTOPORTS has
+    // nothing new to add because all signals already have a declaration.
+    auto top_sv = getFixturePath("autoports_packed_array/top5.sv");
+    auto lib_dir = getFixturePath("autoports_packed_array/lib");
+
+    REQUIRE(fs::exists(top_sv));
+
+    AutosTool tool;
+    REQUIRE(tool.loadWithArgs({top_sv.string(), "-y", lib_dir.string(), "+libext+.sv"}));
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    CHECK(result.success);
+
+    auto autoports_end = result.modified_content.find(");");
+    auto header = result.modified_content.substr(0, autoports_end);
+    size_t first = header.find("amf_rc_int_fifo_level");
+    REQUIRE(first != std::string::npos);
+    CHECK(header.find("amf_rc_int_fifo_level", first + 1) == std::string::npos);
+    CHECK(header.find("reset_n") != std::string::npos);
+}
+
+TEST_CASE("Integration - signal driven and consumed across two instances", "[integration][autoports][packed_array]") {
+    auto top_sv = getFixturePath("autoports_packed_array/top6.sv");
+    auto lib_dir = getFixturePath("autoports_packed_array/lib");
+
+    REQUIRE(fs::exists(top_sv));
+
+    AutosTool tool;
+    REQUIRE(tool.loadWithArgs({top_sv.string(), "-y", lib_dir.string(), "+libext+.sv"}));
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    CHECK(result.success);
+
+    // Producer drives amf_rc_int_fifo_level[0]; consumer reads [0..3].
+    // Since the user already declared the output, AUTOPORTS adds nothing new.
+    auto autoports_end = result.modified_content.find(");");
+    auto header = result.modified_content.substr(0, autoports_end);
+    size_t first = header.find("amf_rc_int_fifo_level");
+    REQUIRE(first != std::string::npos);
+    CHECK(header.find("amf_rc_int_fifo_level", first + 1) == std::string::npos);
+
+    CHECK(result.modified_content.find(".fifo_level (amf_rc_int_fifo_level[0])") != std::string::npos);
+    CHECK(result.modified_content.find(".data_in0 (amf_rc_int_fifo_level[0])") != std::string::npos);
+}
+
+// =============================================================================
+// AUTOPORTS marker with ports declared on both sides (unsorted)
+// =============================================================================
+
+TEST_CASE("Integration - AUTOPORTS with ports before and after marker", "[integration][autoports]") {
+    auto top_sv = getFixturePath("autoports_basic/top_unsorted.sv");
+    auto lib_dir = getFixturePath("autoports_basic/lib");
+
+    REQUIRE(fs::exists(top_sv));
+
+    AutosTool tool;
+    REQUIRE(tool.loadWithArgs({top_sv.string(), "-y", lib_dir.string(), "+libext+.sv"}));
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    CHECK(result.success);
+    CHECK(result.autoinst_count == 1);
+
+    // All submod ports are declared somewhere around the marker, so AUTOPORTS
+    // must not duplicate them. AUTOINST still wires the instance.
+    CHECK(result.modified_content.find(".clk      (clk)") != std::string::npos);
+    CHECK(result.modified_content.find(".rst_n    (rst_n)") != std::string::npos);
+    CHECK(result.modified_content.find(".data_in  (data_in)") != std::string::npos);
+    CHECK(result.modified_content.find(".data_out (data_out)") != std::string::npos);
+    CHECK(result.modified_content.find(".valid    (valid)") != std::string::npos);
+}
+
+// =============================================================================
+// assign LHS concat: documented limitation (signal direction not tracked)
+// =============================================================================
+
+TEST_CASE("Integration - assign LHS concat does not prevent AUTOPORTS on consumers", "[integration][autoports][assign]") {
+    // The comment in the fixture documents that slang-autos does not follow
+    // assign statements for direction inference. This test pins down the
+    // observable consequence: local declarations of split signals suppress
+    // them from AUTOPORTS, while signals used only by manual instances (here
+    // `data_out`) still get inferred as outputs.
+    auto top_sv = getFixturePath("autoports_assign_concat/top.sv");
+    auto lib_dir = getFixturePath("autoports_assign_concat/lib");
+
+    REQUIRE(fs::exists(top_sv));
+
+    AutosTool tool;
+    REQUIRE(tool.loadWithArgs({top_sv.string(), "-y", lib_dir.string(), "+libext+.sv"}));
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    CHECK(result.success);
+
+    // sig_a / sig_b appear in the top comment block; scope the check to the
+    // module port list only.
+    auto mod_start = result.modified_content.find("module top");
+    auto ports_end = result.modified_content.find(");", mod_start);
+    REQUIRE(mod_start != std::string::npos);
+    REQUIRE(ports_end != std::string::npos);
+    auto port_list = result.modified_content.substr(mod_start, ports_end - mod_start);
+
+    CHECK(port_list.find("sig_a") == std::string::npos);
+    CHECK(port_list.find("sig_b") == std::string::npos);
+
+    // data_out is consumed by the manual instance and is inferred as an output.
+    CHECK(port_list.find("output logic  [7:0] data_out") != std::string::npos);
+}
+
+// =============================================================================
+// Width adaptation edge cases (AUTOLOGIC)
+// =============================================================================
+
+TEST_CASE("Integration - width adaptation: narrow producer, wide consumer", "[integration][autologic][width]") {
+    // Producer drives 8 bits; consumer expects 16. AUTOLOGIC declares the
+    // signal at the widest width and slices for the narrower side.
+    auto top_sv = getFixturePath("width_adaptation/top_pad_input.sv");
+    auto lib_dir = getFixturePath("width_adaptation/lib");
+
+    REQUIRE(fs::exists(top_sv));
+
+    AutosTool tool;
+    REQUIRE(tool.loadWithArgs({top_sv.string(), "-y", lib_dir.string(), "+libext+.sv"}));
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    CHECK(result.success);
+
+    CHECK(result.modified_content.find("logic  [15:0] data") != std::string::npos);
+    CHECK(result.modified_content.find(".data (data[7:0])") != std::string::npos);   // producer
+    CHECK(result.modified_content.find(".data (data)") != std::string::npos);        // consumer (full width)
+}
+
+TEST_CASE("Integration - width adaptation: wide producer, narrow consumer", "[integration][autologic][width]") {
+    // Producer 16-bit, consumer 8-bit. Signal declared 16-bit; consumer slices it.
+    auto top_sv = getFixturePath("width_adaptation/top_wide_to_narrow_slice.sv");
+    auto lib_dir = getFixturePath("width_adaptation/lib");
+
+    REQUIRE(fs::exists(top_sv));
+
+    AutosTool tool;
+    REQUIRE(tool.loadWithArgs({top_sv.string(), "-y", lib_dir.string(), "+libext+.sv"}));
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    CHECK(result.success);
+
+    CHECK(result.modified_content.find("logic  [15:0] data") != std::string::npos);
+    CHECK(result.modified_content.find(".data (data)") != std::string::npos);        // producer full width
+    CHECK(result.modified_content.find(".data (data[7:0])") != std::string::npos);   // consumer sliced
+}
+
+TEST_CASE("Integration - AUTOINST preserves manual connections + skips already-connected ports", "[integration][autoinst]") {
+    // top_zero_pad.sv: the wide instance has all of its ports manually
+    // connected, so the /*AUTOINST*/ marker should expand to empty (nothing
+    // to add). The narrow instance's AUTOINST expands normally.
+    auto top_sv = getFixturePath("width_adaptation/top_zero_pad.sv");
+    auto lib_dir = getFixturePath("width_adaptation/lib");
+
+    REQUIRE(fs::exists(top_sv));
+
+    AutosTool tool;
+    REQUIRE(tool.loadWithArgs({top_sv.string(), "-y", lib_dir.string(), "+libext+.sv"}));
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    CHECK(result.success);
+
+    // Manual connections on the wide instance survive untouched.
+    CHECK(result.modified_content.find(".data_in (data_out),") != std::string::npos);
+    CHECK(result.modified_content.find(".data_out(wide_out)") != std::string::npos);
+
+    // Narrow instance gets fully expanded.
+    CHECK(result.modified_content.find(".data_out (data_out)") != std::string::npos);
+    CHECK(result.modified_content.find(".data_in  (data_in)") != std::string::npos);
+}
+
+// =============================================================================
+// Error recovery on malformed input
+// =============================================================================
+
+TEST_CASE("Integration - malformed SystemVerilog does not crash the tool", "[integration][errors]") {
+    auto top_sv = getFixturePath("errors/bad_syntax.sv");
+
+    REQUIRE(fs::exists(top_sv));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({top_sv.string()});
+
+    // Loading may succeed or fail depending on slang's recovery; the
+    // important property is that neither load nor expand crashes.
+    if (loaded) {
+        (void)tool.expandFile(top_sv, /*dry_run=*/true);
+    }
+    SUCCEED("Tool handled malformed input without crashing");
+}
