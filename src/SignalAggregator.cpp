@@ -301,6 +301,7 @@ void SignalAggregator::addFromInstance(
                 usage.info.original_range_str = effective_original_range;
                 usage.info.range_str = effective_resolved_range;
                 usage.info.array_dims = effective_array_dims;
+                usage.info.first_seen_order = next_order_++;
                 if (effective_width > 1) {
                     usage.info.msb = effective_width - 1;
                     usage.info.lsb = 0;
@@ -339,6 +340,16 @@ void SignalAggregator::addFromInstance(
     }
 }
 
+// nets_ is an unordered_map, so iteration order is unstable. Sort the returned
+// vector by first_seen_order so callers receive nets in declaration order
+// (i.e. the order each net was first encountered while walking instances).
+static void sortByFirstSeen(std::vector<NetInfo>& nets) {
+    std::sort(nets.begin(), nets.end(),
+        [](const NetInfo& a, const NetInfo& b) {
+            return a.first_seen_order < b.first_seen_order;
+        });
+}
+
 std::vector<NetInfo> SignalAggregator::getExternalInputNets() const {
     std::vector<NetInfo> result;
     for (const auto& [name, usage] : nets_) {
@@ -349,6 +360,7 @@ std::vector<NetInfo> SignalAggregator::getExternalInputNets() const {
             result.push_back(usage.info);
         }
     }
+    sortByFirstSeen(result);
     return result;
 }
 
@@ -363,6 +375,7 @@ std::vector<NetInfo> SignalAggregator::getExternalOutputNets() const {
             result.push_back(usage.info);
         }
     }
+    sortByFirstSeen(result);
     return result;
 }
 
@@ -374,6 +387,7 @@ std::vector<NetInfo> SignalAggregator::getInoutNets() const {
             result.push_back(it->second.info);
         }
     }
+    sortByFirstSeen(result);
     return result;
 }
 

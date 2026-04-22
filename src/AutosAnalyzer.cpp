@@ -830,14 +830,6 @@ void AutosAnalyzer::generateAutoportsReplacement(
     filter_inouts(inouts);
     filter_inputs(inputs);
 
-    // Sort each group alphabetically by port name
-    auto sort_by_name = [](const NetInfo& a, const NetInfo& b) {
-        return a.name < b.name;
-    };
-    std::sort(outputs.begin(), outputs.end(), sort_by_name);
-    std::sort(inouts.begin(), inouts.end(), sort_by_name);
-    std::sort(inputs.begin(), inputs.end(), sort_by_name);
-
     // Build replacement text (goes after marker, before close paren)
     std::ostringstream oss;
 
@@ -853,11 +845,43 @@ void AutosAnalyzer::generateAutoportsReplacement(
         return p.str();
     };
 
-    // Collect all ports in order: outputs, inouts, inputs
+    // Order ports according to options_.grouping.
+    // Mirrors generatePortConnections() for AUTOINST so both macros stay consistent.
     std::vector<std::pair<std::string, NetInfo>> all_ports;
-    for (const auto& n : outputs) all_ports.emplace_back("output", n);
-    for (const auto& n : inouts) all_ports.emplace_back("inout", n);
-    for (const auto& n : inputs) all_ports.emplace_back("input", n);
+    switch (options_.grouping) {
+        case PortGrouping::Alphabetical: {
+            for (const auto& n : outputs) all_ports.emplace_back("output", n);
+            for (const auto& n : inouts)  all_ports.emplace_back("inout",  n);
+            for (const auto& n : inputs)  all_ports.emplace_back("input",  n);
+            std::sort(all_ports.begin(), all_ports.end(),
+                [](const auto& a, const auto& b) { return a.second.name < b.second.name; });
+            break;
+        }
+        case PortGrouping::ByDeclaration: {
+            for (const auto& n : outputs) all_ports.emplace_back("output", n);
+            for (const auto& n : inouts)  all_ports.emplace_back("inout",  n);
+            for (const auto& n : inputs)  all_ports.emplace_back("input",  n);
+            std::stable_sort(all_ports.begin(), all_ports.end(),
+                [](const auto& a, const auto& b) {
+                    return a.second.first_seen_order < b.second.first_seen_order;
+                });
+            break;
+        }
+        case PortGrouping::ByDirection:
+        default: {
+            // Outputs, inouts, inputs; alphabetical within each group.
+            auto sort_by_name = [](const NetInfo& a, const NetInfo& b) {
+                return a.name < b.name;
+            };
+            std::sort(outputs.begin(), outputs.end(), sort_by_name);
+            std::sort(inouts.begin(),  inouts.end(),  sort_by_name);
+            std::sort(inputs.begin(),  inputs.end(),  sort_by_name);
+            for (const auto& n : outputs) all_ports.emplace_back("output", n);
+            for (const auto& n : inouts)  all_ports.emplace_back("inout",  n);
+            for (const auto& n : inputs)  all_ports.emplace_back("input",  n);
+            break;
+        }
+    }
 
     // Check if we need to add a comma between existing ports and generated ports
     // This is needed when the user's last port doesn't have a trailing comma

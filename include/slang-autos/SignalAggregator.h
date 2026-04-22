@@ -85,6 +85,7 @@ struct NetInfo {
     std::string range_str;          ///< Resolved packed range preserving structure: "[3:0][7:0]"
     std::string array_dims;         ///< Unpacked array dimensions: " [3:0][1:0]" (after name)
     bool is_signed = false;
+    int first_seen_order = -1;      ///< Insertion order across addFromInstance calls (stable sort key)
 
     NetInfo() = default;
     explicit NetInfo(std::string n, int w = 1, std::string orig_range = "", std::string resolved_range = "", std::string arr_dims = "")
@@ -177,6 +178,7 @@ private:
     std::set<std::string> inout_nets_;  ///< Nets connected to inout ports
     std::set<std::string> concatenation_nets_;  ///< Nets from concatenation expressions (internal-only)
     std::vector<NetInfo> unused_signals_;  ///< Unused signals for output width adaptation
+    int next_order_ = 0;                ///< Counter for assigning first_seen_order to new nets
 };
 
 } // namespace slang_autos
