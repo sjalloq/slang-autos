@@ -2,6 +2,7 @@
 
 #include <set>
 #include <string>
+#include <unordered_set>
 #include <vector>
 #include <optional>
 
@@ -143,7 +144,17 @@ private:
     CollectedInfo collectModuleInfo(const slang::syntax::ModuleDeclarationSyntax& module);
     void processMemberRecursive(const slang::syntax::MemberSyntax* member,
                                 CollectedInfo& info,
-                                bool& in_autologic_block);
+                                bool& in_autologic_block,
+                                bool in_dead_branch);
+
+    /// Walk the elaborated AST for this module and populate
+    /// dead_generate_blocks_ with syntax pointers for every generate block
+    /// whose branch was not chosen during elaboration. Used by the parser to
+    /// skip assign/declaration tracking inside dead branches — those
+    /// statements don't exist in the elaborated design, and recording them
+    /// corrupts AUTOPORTS/AUTOLOGIC classification.
+    void collectDeadGenerateBlocks(const slang::syntax::ModuleDeclarationSyntax& module);
+    void collectDeadBlocksFromScope(const slang::ast::Scope& scope);
     void resolvePortsAndSignals(const slang::syntax::ModuleDeclarationSyntax& module,
                                 CollectedInfo& info);
     void generateReplacements(const slang::syntax::ModuleDeclarationSyntax& module,
@@ -226,6 +237,14 @@ private:
 
     std::string_view source_content_;  // Original source for comparison
     std::vector<Replacement> replacements_;
+
+    /// Source offsets of generate blocks pruned by elaboration for the
+    /// current module. Populated per-module by collectDeadGenerateBlocks().
+    /// Offsets rather than syntax pointers because Tool.cpp re-parses the
+    /// source independently of the slang compilation's tree, so pointer
+    /// equality can't cross that boundary — but offsets into the same
+    /// source text are consistent.
+    std::unordered_set<size_t> dead_generate_blocks_;
 
     int autoinst_count_ = 0;
     int autologic_count_ = 0;

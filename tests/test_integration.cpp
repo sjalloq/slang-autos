@@ -2973,3 +2973,47 @@ TEST_CASE("Integration - malformed SystemVerilog does not crash the tool", "[int
     }
     SUCCEED("Tool handled malformed input without crashing");
 }
+
+// =============================================================================
+// Generate-branch awareness: assigns in inactive generate branches must not
+// bleed into AUTOPORTS/AUTOLOGIC classification. Regression test for the bug
+// where an `assign data_out = clk;` in an elaboration-dead branch caused
+// AUTOLOGIC to redeclare a signal that AUTOPORTS had already promoted to a
+// port (driven by an instance in the live scope).
+// =============================================================================
+
+TEST_CASE("Integration - assign in dead generate branch does not leak into AUTOLOGIC",
+          "[integration][autologic][autoports][generate]") {
+    auto top_sv = getFixturePath("autologic_dead_generate_branch/top.sv");
+    auto lib_dir = getFixturePath("autologic_dead_generate_branch/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    REQUIRE(tool.loadWithArgs({top_sv.string(), "-y", lib_dir.string(), "+libext+.sv"}));
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    CHECK(result.success);
+
+    // data_out is driven by u_child (live scope), so AUTOPORTS must promote it.
+    auto autoports_start = result.modified_content.find("/*AUTOPORTS*/");
+    REQUIRE(autoports_start != std::string::npos);
+    auto autoports_end = result.modified_content.find(");", autoports_start);
+    REQUIRE(autoports_end != std::string::npos);
+    auto ports_section = result.modified_content.substr(
+        autoports_start, autoports_end - autoports_start);
+    CHECK(ports_section.find("data_out") != std::string::npos);
+
+    // AUTOLOGIC must NOT redeclare data_out. The `assign data_out = clk;` sits
+    // in a dead branch and must not influence classification.
+    auto autologic_start = result.modified_content.find("// Beginning of automatic logic");
+    if (autologic_start != std::string::npos) {
+        auto autologic_end = result.modified_content.find("// End of automatics",
+                                                           autologic_start);
+        REQUIRE(autologic_end != std::string::npos);
+        auto autologic_section = result.modified_content.substr(
+            autologic_start, autologic_end - autologic_start);
+        CHECK(autologic_section.find("data_out") == std::string::npos);
+    }
+}
