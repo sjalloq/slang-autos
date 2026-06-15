@@ -7,6 +7,8 @@
 #include <sstream>
 #include <algorithm>
 #include <iomanip>
+#include <cstdlib>
+#include <cstdarg>
 
 #include <slang/ast/Compilation.h>
 #include <slang/ast/Scope.h>
@@ -24,6 +26,20 @@ using namespace slang::parsing;
 using namespace slang::ast;
 
 namespace {
+/// Debug logging gated on the SLANG_AUTOS_DEBUG environment variable.
+bool autosDebugEnabled() {
+    static const bool enabled = std::getenv("SLANG_AUTOS_DEBUG") != nullptr;
+    return enabled;
+}
+void adbg(const char* fmt, ...) {
+    if (!autosDebugEnabled()) return;
+    va_list args;
+    va_start(args, fmt);
+    fprintf(stderr, "[autos-dbg] ");
+    vfprintf(stderr, fmt, args);
+    va_end(args);
+}
+
 /// Convert NetType enum to the keyword string used in declarations.
 const char* netTypeKeyword(NetType nt) {
     switch (nt) {
@@ -77,6 +93,14 @@ void AutosAnalyzer::analyze(const std::shared_ptr<SyntaxTree>& tree,
 void AutosAnalyzer::processModule(const ModuleDeclarationSyntax& module) {
     CollectedInfo info = collectModuleInfo(module);
 
+    adbg("processModule '%.*s': autoinsts=%zu manual_insts=%zu "
+         "has_autologic=%d has_autoports=%d (dead_blocks=%zu)\n",
+         (int)module.header->name.valueText().size(),
+         module.header->name.valueText().data(),
+         info.autoinsts.size(), info.manual_insts.size(),
+         info.has_autologic ? 1 : 0, info.has_autoports ? 1 : 0,
+         dead_generate_blocks_.size());
+
     if (info.autoinsts.empty() && !info.has_autologic && !info.has_autoports) {
         return;
     }
@@ -124,16 +148,22 @@ void AutosAnalyzer::processMemberRecursive(
         if (auto pos = findMarkerInTrivia(tok, markers::AUTOLOGIC)) {
             info.has_autologic = true;
             info.autologic.marker_end = pos->second;
+            adbg("AUTOLOGIC marker detected (member kind=%d, in_dead_branch=%d)\n",
+                 (int)member->kind, in_dead_branch ? 1 : 0);
         }
         if (auto pos = findMarkerInTrivia(tok, markers::BEGIN_AUTOLOGIC)) {
             in_autologic_block = true;
             info.autologic.has_existing_block = true;
             info.autologic.block_start = pos->first;
+            adbg("BEGIN_AUTOLOGIC detected (member kind=%d) block_start=%zu\n",
+                 (int)member->kind, pos->first);
         }
         if (in_autologic_block) {
             if (auto pos = findMarkerInTrivia(tok, markers::END_AUTOMATICS)) {
                 in_autologic_block = false;
                 info.autologic.block_end = pos->second;
+                adbg("END_AUTOMATICS detected (member kind=%d) block_end=%zu\n",
+                     (int)member->kind, pos->second);
             }
         }
     }
@@ -154,6 +184,8 @@ void AutosAnalyzer::processMemberRecursive(
         size_t blk_off = block.sourceRange().start().offset();
         bool matched_dead = dead_generate_blocks_.count(blk_off) > 0;
         bool child_dead = in_dead_branch || matched_dead;
+        adbg("GenerateBlock offset=%zu matched_dead_set=%d inherited_dead=%d -> child_dead=%d\n",
+             blk_off, matched_dead ? 1 : 0, in_dead_branch ? 1 : 0, child_dead ? 1 : 0);
         for (auto* child : block.members) {
             processMemberRecursive(child, info, in_autologic_block, child_dead);
         }
@@ -314,6 +346,8 @@ void AutosAnalyzer::processMemberRecursive(
     // AUTOLOGIC classification. Marker tracking above this point still runs
     // so the dead-branch source text survives re-expansion unchanged.
     if (in_dead_branch) {
+        adbg("skipping decl/assign tracking for member kind=%d (in dead generate branch)\n",
+             (int)member->kind);
         return;
     }
 
@@ -421,7 +455,10 @@ void AutosAnalyzer::collectDeadBlocksFromScope(const slang::ast::Scope& scope) {
         if (auto* block = member.as_if<GenerateBlockSymbol>()) {
             if (block->isUninstantiated) {
                 if (auto* syntax = block->getSyntax()) {
-                    dead_generate_blocks_.insert(syntax->sourceRange().start().offset());
+                    size_t off = syntax->sourceRange().start().offset();
+                    dead_generate_blocks_.insert(off);
+                    adbg("dead generate block: name='%.*s' offset=%zu (uninstantiated)\n",
+                         (int)block->name.size(), block->name.data(), off);
                 }
                 // Don't descend — everything inside is dead too, and the
                 // propagated in_dead_branch flag will cover nested blocks.
@@ -450,10 +487,17 @@ void AutosAnalyzer::collectDeadGenerateBlocks(const ModuleDeclarationSyntax& mod
     for (auto* topInst : root.topInstances) {
         if (!topInst) continue;
         if (topInst->body.getDefinition().name == target) {
+            adbg("collectDeadGenerateBlocks: matched top instance for module '%.*s'\n",
+                 (int)target.size(), target.data());
             collectDeadBlocksFromScope(topInst->body);
+            adbg("collectDeadGenerateBlocks: total dead blocks=%zu\n",
+                 dead_generate_blocks_.size());
             return;
         }
     }
+    adbg("collectDeadGenerateBlocks: module '%.*s' NOT found among %zu top instances "
+         "(dead-branch detection inactive)\n",
+         (int)target.size(), target.data(), root.topInstances.size());
 }
 
 AutosAnalyzer::CollectedInfo
@@ -525,6 +569,16 @@ AutosAnalyzer::collectModuleInfo(const ModuleDeclarationSyntax& module) {
             }
         }
     }
+
+    adbg("collectModuleInfo '%.*s': has_autologic=%d has_existing_block=%d "
+         "block_start=%zu block_end=%zu has_autoports=%d existing_ports=%zu "
+         "existing_decls=%zu\n",
+         (int)module.header->name.valueText().size(),
+         module.header->name.valueText().data(),
+         info.has_autologic ? 1 : 0, info.autologic.has_existing_block ? 1 : 0,
+         info.autologic.block_start, info.autologic.block_end,
+         info.has_autoports ? 1 : 0, info.autoports.existing_ports.size(),
+         info.existing_decls.size());
 
     return info;
 }
@@ -620,18 +674,38 @@ void AutosAnalyzer::resolvePortsAndSignals(
 
     aggregator_ = SignalAggregator();
 
+    adbg("resolvePortsAndSignals: module='%.*s' autoinsts=%zu manual_insts=%zu\n",
+         (int)module.header->name.valueText().size(),
+         module.header->name.valueText().data(),
+         info.autoinsts.size(), info.manual_insts.size());
+
     // Process AUTOINST instances
     for (auto& inst : info.autoinsts) {
         auto ports = getModulePorts(inst.module_type);
+        adbg("  AUTOINST inst='%s' type='%s' resolved_ports=%zu%s\n",
+             inst.instance_name.c_str(), inst.module_type.c_str(), ports.size(),
+             ports.empty() ? "  <-- EMPTY: instance SKIPPED, signals dropped" : "");
         if (ports.empty()) continue;
 
         auto connections = buildConnections(inst, ports);
+        if (autosDebugEnabled()) {
+            for (auto& c : connections) {
+                adbg("      port='%s' dir='%s' expr='%s'\n",
+                     c.port_name.c_str(), c.direction.c_str(),
+                     c.is_unconnected ? "<unconnected>" :
+                     (c.is_constant ? "<const>" : c.signal_expr.c_str()));
+            }
+        }
         aggregator_.addFromInstance(inst.instance_name, connections, ports);
     }
 
     // Process manual (non-AUTOINST) instances for signal direction tracking
     for (auto& inst : info.manual_insts) {
         auto ports = getModulePorts(inst.module_type);
+        adbg("  MANUAL   inst='%s' type='%s' resolved_ports=%zu connections=%zu%s\n",
+             inst.instance_name.c_str(), inst.module_type.c_str(), ports.size(),
+             inst.port_connections.size(),
+             ports.empty() ? "  <-- EMPTY: instance SKIPPED, signals dropped" : "");
         if (ports.empty()) continue;
 
         // Build connections from the manual port connections
@@ -666,6 +740,18 @@ void AutosAnalyzer::resolvePortsAndSignals(
         }
 
         aggregator_.addFromInstance(inst.instance_name, connections, ports);
+    }
+
+    if (autosDebugEnabled()) {
+        auto internal = aggregator_.getInternalNets();
+        auto ext_in   = aggregator_.getExternalInputNets();
+        auto ext_out  = aggregator_.getExternalOutputNets();
+        adbg("aggregator classification: internal=%zu ext_in=%zu ext_out=%zu\n",
+             internal.size(), ext_in.size(), ext_out.size());
+        for (auto& n : internal) adbg("    INTERNAL (-> AUTOLOGIC): %s\n", n.name.c_str());
+        for (auto& n : ext_in)   adbg("    EXTERNAL-INPUT  (-> AUTOPORTS): %s\n", n.name.c_str());
+        for (auto& n : ext_out)  adbg("    EXTERNAL-OUTPUT (-> AUTOPORTS): %s\n", n.name.c_str());
+        adbg("    (signals classified EXTERNAL with no /*AUTOPORTS*/ marker are DROPPED)\n");
     }
 }
 
@@ -812,7 +898,15 @@ void AutosAnalyzer::generateAutoInstReplacement(
 void AutosAnalyzer::generateAutologicReplacement(const CollectedInfo& info) {
     std::string decls = generateAutologicDecls(info);
 
+    adbg("generateAutologicReplacement: has_existing_block=%d block_start=%zu block_end=%zu "
+         "marker_end=%zu decls_len=%zu qos_in_decls=%d\n",
+         info.autologic.has_existing_block ? 1 : 0,
+         info.autologic.block_start, info.autologic.block_end,
+         info.autologic.marker_end, decls.size(),
+         decls.find("qos_map_ar_key_table") != std::string::npos ? 1 : 0);
+
     if (decls.empty() && !info.autologic.has_existing_block) {
+        adbg("  -> AUTOLOGIC replacement SKIPPED (empty decls, no existing block)\n");
         return;
     }
 
@@ -1204,6 +1298,17 @@ std::string AutosAnalyzer::generateAutologicDecls(const CollectedInfo& info) {
     auto nets = aggregator_.getInternalNets();
     const auto& unused_signals = aggregator_.getUnusedSignals();
 
+    adbg("generateAutologicDecls: internal_nets=%zu existing_decls=%zu unused=%zu\n",
+         nets.size(), existing_decls.size(), unused_signals.size());
+    if (autosDebugEnabled()) {
+        for (auto& n : nets) {
+            const char* suppressed = existing_decls.count(n.name)
+                ? "  (suppressed: already in existing_decls)" : "";
+            adbg("    candidate net '%s'%s\n", n.name.c_str(), suppressed);
+        }
+        for (auto& d : existing_decls) adbg("    existing_decl '%s'\n", d.c_str());
+    }
+
     std::vector<NetInfo> to_declare;
     std::set<std::string> already_added;
 
@@ -1250,6 +1355,15 @@ std::string AutosAnalyzer::generateAutologicDecls(const CollectedInfo& info) {
             to_declare.push_back(*net_info);
             already_added.insert(sig_name);
         }
+    }
+
+    adbg("generateAutologicDecls: FINAL to_declare=%zu (these are the decls emitted)\n",
+         to_declare.size());
+    if (autosDebugEnabled()) {
+        for (auto& n : to_declare) adbg("    emit decl: %s\n", n.name.c_str());
+        bool has_qos = false;
+        for (auto& n : to_declare) if (n.name == "qos_map_ar_key_table") has_qos = true;
+        adbg("    qos_map_ar_key_table in to_declare = %d\n", has_qos ? 1 : 0);
     }
 
     if (to_declare.empty()) return "";

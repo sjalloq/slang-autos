@@ -1,10 +1,21 @@
 #include "slang-autos/Writer.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <sstream>
 
 namespace slang_autos {
+
+namespace {
+// Mirrors the SLANG_AUTOS_DEBUG gate used in AutosAnalyzer so a single
+// environment variable lights up the whole pipeline's diagnostics.
+bool writerDebugEnabled() {
+    static const bool enabled = std::getenv("SLANG_AUTOS_DEBUG") != nullptr;
+    return enabled;
+}
+} // namespace
 
 // ============================================================================
 // SourceWriter Implementation
@@ -28,7 +39,17 @@ std::string SourceWriter::applyReplacements(
 
     for (const auto& repl : replacements) {
         if (repl.start > repl.end || repl.end > result.size()) {
-            continue;  // Skip invalid ranges to prevent corruption
+            // Skip invalid ranges to prevent corruption. This is silent in
+            // normal operation but is a common symptom of a marker/boundary
+            // bug (e.g. an unset block_end), so surface it under debug.
+            if (writerDebugEnabled()) {
+                fprintf(stderr,
+                    "[autos-dbg] Writer SKIPPED invalid replacement: start=%zu end=%zu "
+                    "(content_size=%zu) description='%s' new_text_len=%zu\n",
+                    repl.start, repl.end, result.size(), repl.description.c_str(),
+                    repl.new_text.size());
+            }
+            continue;
         }
         result = result.substr(0, repl.start) +
                  repl.new_text +
