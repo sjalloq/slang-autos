@@ -3017,3 +3017,38 @@ TEST_CASE("Integration - assign in dead generate branch does not leak into AUTOL
         CHECK(autologic_section.find("data_out") == std::string::npos);
     }
 }
+
+// =============================================================================
+// Generate-block adjacency: the `// End of automatics` marker that closes an
+// existing AUTOLOGIC block lives in the leading trivia of the generate
+// construct that immediately follows it. Marker detection must run before the
+// generate-construct dispatch, otherwise block_end stays 0, the writer skips
+// the replacement (start > end), and the block is never regenerated — so any
+// signal missing from it is silently never restored.
+// =============================================================================
+
+TEST_CASE("Integration - END_AUTOMATICS marker before a generate block still regenerates",
+          "[integration][autologic][generate]") {
+    auto top_sv = getFixturePath("autologic_end_marker_before_generate/top.sv");
+    auto lib_dir = getFixturePath("autologic_end_marker_before_generate/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    REQUIRE(tool.loadWithArgs({top_sv.string(), "-y", lib_dir.string(), "+libext+.sv"}));
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    CHECK(result.success);
+
+    // data_int is driven by u_p and consumed by u_c (both live), so it is an
+    // internal net that AUTOLOGIC must (re)declare even though the existing
+    // block is empty and is immediately followed by a generate construct.
+    auto autologic_start = result.modified_content.find("// Beginning of automatic logic");
+    REQUIRE(autologic_start != std::string::npos);
+    auto autologic_end = result.modified_content.find("// End of automatics", autologic_start);
+    REQUIRE(autologic_end != std::string::npos);
+    auto autologic_section = result.modified_content.substr(
+        autologic_start, autologic_end - autologic_start);
+    CHECK(autologic_section.find("data_int") != std::string::npos);
+}

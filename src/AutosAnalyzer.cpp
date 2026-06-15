@@ -106,6 +106,39 @@ void AutosAnalyzer::processMemberRecursive(
     if (!member) return;
 
     // ─────────────────────────────────────────────────────────────────────────
+    // AUTO marker detection (AUTOLOGIC marker + existing-block BEGIN/END bounds).
+    //
+    // This MUST run before the generate-construct dispatch below. slang attaches
+    // a comment as leading trivia of the *following* token, so when one of these
+    // markers sits immediately before a generate construct — e.g.
+    //     // End of automatics
+    //     if (STUB == 0) begin : g_live
+    // — the marker lives in the generate construct's first-token trivia. The
+    // early `return`s in the generate handlers used to skip detection entirely,
+    // leaving block_end == 0, which made the writer silently drop the AUTOLOGIC
+    // re-expansion (start > end) so the block was never regenerated.
+    //
+    // Uses first-token leading trivia (not findMarkerInNode) so we never match a
+    // marker belonging to a nested block deeper inside a generate subtree.
+    if (auto tok = member->getFirstToken(); tok.valid()) {
+        if (auto pos = findMarkerInTrivia(tok, markers::AUTOLOGIC)) {
+            info.has_autologic = true;
+            info.autologic.marker_end = pos->second;
+        }
+        if (auto pos = findMarkerInTrivia(tok, markers::BEGIN_AUTOLOGIC)) {
+            in_autologic_block = true;
+            info.autologic.has_existing_block = true;
+            info.autologic.block_start = pos->first;
+        }
+        if (in_autologic_block) {
+            if (auto pos = findMarkerInTrivia(tok, markers::END_AUTOMATICS)) {
+                in_autologic_block = false;
+                info.autologic.block_end = pos->second;
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     // Recursively process generate constructs
     // ─────────────────────────────────────────────────────────────────────────
     if (member->kind == SyntaxKind::GenerateRegion) {
@@ -273,35 +306,8 @@ void AutosAnalyzer::processMemberRecursive(
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // AUTOLOGIC marker - position from trivia
-    // ─────────────────────────────────────────────────────────────────────────
-    if (auto tok = member->getFirstToken(); tok.valid()) {
-        if (auto pos = findMarkerInTrivia(tok, markers::AUTOLOGIC)) {
-            info.has_autologic = true;
-            info.autologic.marker_end = pos->second;
-        }
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // AUTOLOGIC existing block - positions from AST
-    // Use precise marker positions, not member sourceRange, because
-    // END_AUTOMATICS may be trivia on the NEXT member (which we don't want to delete)
-    // ─────────────────────────────────────────────────────────────────────────
-    if (auto pos = findMarkerInNode(*member, markers::BEGIN_AUTOLOGIC)) {
-        in_autologic_block = true;
-        info.autologic.has_existing_block = true;
-        // Find start of line containing the marker
-        info.autologic.block_start = pos->first;
-    }
-
-    if (in_autologic_block) {
-        if (auto pos = findMarkerInNode(*member, markers::END_AUTOMATICS)) {
-            in_autologic_block = false;
-            // End position is after the marker
-            info.autologic.block_end = pos->second;
-        }
-    }
+    // (AUTOLOGIC / BEGIN_AUTOLOGIC / END_AUTOMATICS markers are detected at the
+    // top of this function, before the generate-construct dispatch.)
 
     // Inside a dead generate branch: the declarations and assigns below don't
     // exist in the elaborated design, so they must not feed into AUTOPORTS /
