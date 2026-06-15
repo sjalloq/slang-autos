@@ -9,6 +9,9 @@
 #include <iomanip>
 
 #include <slang/ast/Compilation.h>
+#include <slang/ast/Scope.h>
+#include <slang/ast/symbols/BlockSymbols.h>
+#include <slang/ast/symbols/CompilationUnitSymbols.h>
 #include <slang/ast/symbols/InstanceSymbols.h>
 #include <slang/syntax/SyntaxTree.h>
 #include <slang/syntax/AllSyntax.h>
@@ -88,10 +91,17 @@ void AutosAnalyzer::processModule(const ModuleDeclarationSyntax& module) {
 
 // Helper to recursively process a single member for AUTOINST/AUTOLOGIC markers.
 // This allows AUTOINST to work inside generate blocks.
+//
+// `in_dead_branch` is true when the caller has already descended into a
+// generate branch that elaboration pruned. It propagates through all nested
+// constructs so downstream code (assign/decl tracking) can skip statements
+// that don't exist in the elaborated design. Marker tracking still runs in
+// dead branches so the source text survives re-expansion unchanged.
 void AutosAnalyzer::processMemberRecursive(
     const MemberSyntax* member,
     CollectedInfo& info,
-    bool& in_autologic_block) {
+    bool& in_autologic_block,
+    bool in_dead_branch) {
 
     if (!member) return;
 
@@ -101,28 +111,31 @@ void AutosAnalyzer::processMemberRecursive(
     if (member->kind == SyntaxKind::GenerateRegion) {
         auto& region = member->as<GenerateRegionSyntax>();
         for (auto* child : region.members) {
-            processMemberRecursive(child, info, in_autologic_block);
+            processMemberRecursive(child, info, in_autologic_block, in_dead_branch);
         }
         return;
     }
 
     if (member->kind == SyntaxKind::GenerateBlock) {
         auto& block = member->as<GenerateBlockSyntax>();
+        size_t blk_off = block.sourceRange().start().offset();
+        bool matched_dead = dead_generate_blocks_.count(blk_off) > 0;
+        bool child_dead = in_dead_branch || matched_dead;
         for (auto* child : block.members) {
-            processMemberRecursive(child, info, in_autologic_block);
+            processMemberRecursive(child, info, in_autologic_block, child_dead);
         }
         return;
     }
 
     if (member->kind == SyntaxKind::LoopGenerate) {
         auto& loop = member->as<LoopGenerateSyntax>();
-        processMemberRecursive(loop.block, info, in_autologic_block);
+        processMemberRecursive(loop.block, info, in_autologic_block, in_dead_branch);
         return;
     }
 
     if (member->kind == SyntaxKind::IfGenerate) {
         auto& ifGen = member->as<IfGenerateSyntax>();
-        processMemberRecursive(ifGen.block, info, in_autologic_block);
+        processMemberRecursive(ifGen.block, info, in_autologic_block, in_dead_branch);
         if (ifGen.elseClause) {
             // elseClause->clause is a not_null<SyntaxNode*>, get the underlying pointer
             const SyntaxNode* clause = ifGen.elseClause->clause.get();
@@ -132,7 +145,7 @@ void AutosAnalyzer::processMemberRecursive(
                 clause->kind == SyntaxKind::IfGenerate ||
                 clause->kind == SyntaxKind::CaseGenerate ||
                 clause->kind == SyntaxKind::LoopGenerate) {
-                processMemberRecursive(static_cast<const MemberSyntax*>(clause), info, in_autologic_block);
+                processMemberRecursive(static_cast<const MemberSyntax*>(clause), info, in_autologic_block, in_dead_branch);
             }
         }
         return;
@@ -155,7 +168,7 @@ void AutosAnalyzer::processMemberRecursive(
                  clause->kind == SyntaxKind::IfGenerate ||
                  clause->kind == SyntaxKind::CaseGenerate ||
                  clause->kind == SyntaxKind::LoopGenerate)) {
-                processMemberRecursive(static_cast<const MemberSyntax*>(clause), info, in_autologic_block);
+                processMemberRecursive(static_cast<const MemberSyntax*>(clause), info, in_autologic_block, in_dead_branch);
             }
         }
         return;
@@ -290,6 +303,14 @@ void AutosAnalyzer::processMemberRecursive(
         }
     }
 
+    // Inside a dead generate branch: the declarations and assigns below don't
+    // exist in the elaborated design, so they must not feed into AUTOPORTS /
+    // AUTOLOGIC classification. Marker tracking above this point still runs
+    // so the dead-branch source text survives re-expansion unchanged.
+    if (in_dead_branch) {
+        return;
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // User declarations
     // ─────────────────────────────────────────────────────────────────────────
@@ -382,13 +403,65 @@ void AutosAnalyzer::processMemberRecursive(
     }
 }
 
+// Recursively walk an elaborated scope and collect source-text offsets of
+// GenerateBlockSymbols whose branch was pruned during elaboration.
+// Descends into live generate blocks (to catch nested dead branches) and
+// into generate block arrays (loop generate), but does not descend into
+// nested module instance bodies — only this module's own pruned branches
+// are relevant for the parser walk.
+void AutosAnalyzer::collectDeadBlocksFromScope(const slang::ast::Scope& scope) {
+    using namespace slang::ast;
+    for (auto& member : scope.members()) {
+        if (auto* block = member.as_if<GenerateBlockSymbol>()) {
+            if (block->isUninstantiated) {
+                if (auto* syntax = block->getSyntax()) {
+                    dead_generate_blocks_.insert(syntax->sourceRange().start().offset());
+                }
+                // Don't descend — everything inside is dead too, and the
+                // propagated in_dead_branch flag will cover nested blocks.
+            } else {
+                collectDeadBlocksFromScope(*block);
+            }
+        } else if (auto* array = member.as_if<GenerateBlockArraySymbol>()) {
+            for (auto* entry : array->entries) {
+                if (entry) collectDeadBlocksFromScope(*entry);
+            }
+        }
+        // Deliberately skip InstanceSymbol — child module bodies have their
+        // own generate blocks we don't care about.
+    }
+}
+
+void AutosAnalyzer::collectDeadGenerateBlocks(const ModuleDeclarationSyntax& module) {
+    using namespace slang::ast;
+    auto& root = compilation_.getRoot();
+    // Tool.cpp re-parses the source for the analyzer independently of the
+    // compilation's syntax tree, so pointer-compare on ModuleDeclarationSyntax
+    // doesn't work across the two trees. Match by module name and compare
+    // source-text offsets — both trees agree on identifiers and on offsets
+    // into the file content.
+    std::string_view target = module.header->name.valueText();
+    for (auto* topInst : root.topInstances) {
+        if (!topInst) continue;
+        if (topInst->body.getDefinition().name == target) {
+            collectDeadBlocksFromScope(topInst->body);
+            return;
+        }
+    }
+}
+
 AutosAnalyzer::CollectedInfo
 AutosAnalyzer::collectModuleInfo(const ModuleDeclarationSyntax& module) {
     CollectedInfo info;
     bool in_autologic_block = false;
 
+    // Populate dead_generate_blocks_ from the elaborated AST so the parser
+    // walk below can skip assign/decl tracking inside pruned branches.
+    dead_generate_blocks_.clear();
+    collectDeadGenerateBlocks(module);
+
     for (auto* member : module.members) {
-        processMemberRecursive(member, info, in_autologic_block);
+        processMemberRecursive(member, info, in_autologic_block, /*in_dead_branch=*/false);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
