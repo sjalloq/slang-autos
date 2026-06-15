@@ -3088,3 +3088,30 @@ TEST_CASE("Integration - concatenation member width is not the port width",
     // ... but as 1-bit nets, never with the 3-bit port range bled across.
     CHECK(autologic_section.find("[2:0]") == std::string::npos);
 }
+
+// =============================================================================
+// Multi-declarator declarations: `wire wire_a, wire_b;` declares two signals in
+// one statement. Every declared name must be recorded as existing, otherwise
+// AUTOLOGIC re-declares the later ones, producing a duplicate declaration.
+// =============================================================================
+
+TEST_CASE("Integration - every name in a multi-declarator declaration is recognised",
+          "[integration][autologic]") {
+    auto top_sv = getFixturePath("autologic_multi_declarator/top.sv");
+    auto lib_dir = getFixturePath("autologic_multi_declarator/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    REQUIRE(tool.loadWithArgs({top_sv.string(), "-y", lib_dir.string(), "+libext+.sv"}));
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    CHECK(result.success);
+
+    // Both nets are user-declared via `wire wire_a, wire_b;`, so AUTOLOGIC must
+    // re-declare neither -- the first declarator was already handled; the
+    // regression is the second one being missed and re-declared as logic.
+    CHECK(result.modified_content.find("logic wire_a") == std::string::npos);
+    CHECK(result.modified_content.find("logic wire_b") == std::string::npos);
+}

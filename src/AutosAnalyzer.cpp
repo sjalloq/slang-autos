@@ -355,8 +355,8 @@ void AutosAnalyzer::processMemberRecursive(
     // User declarations
     // ─────────────────────────────────────────────────────────────────────────
     if (!in_autologic_block) {
-        if (auto name = extractDeclarationName(*member)) {
-            info.existing_decls.insert(*name);
+        for (auto& name : extractDeclarationNames(*member)) {
+            info.existing_decls.insert(name);
         }
     }
 
@@ -1494,21 +1494,21 @@ AutosAnalyzer::extractInstanceInfo(const MemberSyntax& member) const {
     return std::make_pair(module_type, inst_name);
 }
 
-std::optional<std::string>
-AutosAnalyzer::extractDeclarationName(const MemberSyntax& member) const {
+std::vector<std::string>
+AutosAnalyzer::extractDeclarationNames(const MemberSyntax& member) const {
+    std::vector<std::string> names;
+    auto collect = [&](auto& declarators) {
+        for (auto* d : declarators) {
+            auto name = d->name.valueText();
+            if (!name.empty()) names.emplace_back(name);
+        }
+    };
     if (member.kind == SyntaxKind::DataDeclaration) {
-        auto& decl = member.as<DataDeclarationSyntax>();
-        if (!decl.declarators.empty()) {
-            return std::string(decl.declarators[0]->name.valueText());
-        }
+        collect(member.as<DataDeclarationSyntax>().declarators);
+    } else if (member.kind == SyntaxKind::NetDeclaration) {
+        collect(member.as<NetDeclarationSyntax>().declarators);
     }
-    if (member.kind == SyntaxKind::NetDeclaration) {
-        auto& decl = member.as<NetDeclarationSyntax>();
-        if (!decl.declarators.empty()) {
-            return std::string(decl.declarators[0]->name.valueText());
-        }
-    }
-    return std::nullopt;
+    return names;
 }
 
 const AutoTemplate* AutosAnalyzer::findTemplate(const std::string& module_name,

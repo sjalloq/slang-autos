@@ -199,8 +199,11 @@ private:
     std::optional<std::pair<std::string, std::string>>
     extractInstanceInfo(const slang::syntax::MemberSyntax& member) const;
 
-    std::optional<std::string>
-    extractDeclarationName(const slang::syntax::MemberSyntax& member) const;
+    // Returns every declared name in a net/data declaration. A single
+    // declaration may declare several signals (e.g. `wire wire_a, wire_b;`),
+    // so all declarators must be reported, not just the first.
+    std::vector<std::string>
+    extractDeclarationNames(const slang::syntax::MemberSyntax& member) const;
 
     const AutoTemplate* findTemplate(const std::string& module_name,
                                       size_t before_line) const;
