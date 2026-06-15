@@ -3052,3 +3052,39 @@ TEST_CASE("Integration - END_AUTOMATICS marker before a generate block still reg
         autologic_start, autologic_end - autologic_start);
     CHECK(autologic_section.find("data_int") != std::string::npos);
 }
+
+// =============================================================================
+// Concatenation width: a signal used inside a concatenation must take its own
+// width, not the width of the port the concatenation feeds. e.g. three 1-bit
+// nets concatenated into a 3-bit port must each declare as 1-bit, not [2:0].
+// =============================================================================
+
+TEST_CASE("Integration - concatenation member width is not the port width",
+          "[integration][autologic][concatenation]") {
+    auto top_sv = getFixturePath("autologic_concatenation_width/top.sv");
+    auto lib_dir = getFixturePath("autologic_concatenation_width/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    REQUIRE(tool.loadWithArgs({top_sv.string(), "-y", lib_dir.string(), "+libext+.sv"}));
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    CHECK(result.success);
+
+    auto autologic_start = result.modified_content.find("// Beginning of automatic logic");
+    REQUIRE(autologic_start != std::string::npos);
+    auto autologic_end = result.modified_content.find("// End of automatics", autologic_start);
+    REQUIRE(autologic_end != std::string::npos);
+    auto autologic_section = result.modified_content.substr(
+        autologic_start, autologic_end - autologic_start);
+
+    // All three nets must be declared (internal: driven by producer, consumed
+    // by sink) ...
+    CHECK(autologic_section.find("sig_a") != std::string::npos);
+    CHECK(autologic_section.find("sig_b") != std::string::npos);
+    CHECK(autologic_section.find("sig_c") != std::string::npos);
+    // ... but as 1-bit nets, never with the 3-bit port range bled across.
+    CHECK(autologic_section.find("[2:0]") == std::string::npos);
+}

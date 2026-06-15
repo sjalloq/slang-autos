@@ -272,7 +272,17 @@ void SignalAggregator::addFromInstance(
         std::string effective_resolved_range = resolved_range;
         std::string effective_array_dims = array_dims;
 
-        if (max_bit >= 0) {
+        if (conn.is_concatenation) {
+            // A concatenation distributes the port width across its members,
+            // so the port width is NOT the width of each individual signal.
+            // Default each member to a single bit; its real width is recovered
+            // from any direct (non-concatenated) connection via merge() below.
+            // (e.g. .din({a, b, c}) on a [9:0] port must not make a/b/c 10 bits.)
+            effective_width = 1;
+            effective_original_range.clear();
+            effective_resolved_range.clear();
+            effective_array_dims.clear();
+        } else if (max_bit >= 0) {
             // If bit index is specified, required width is max_bit + 1
             int required_width = max_bit + 1;
             if (required_width > effective_width) {
