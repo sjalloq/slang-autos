@@ -16,6 +16,7 @@
 #include <slang/ast/symbols/CompilationUnitSymbols.h>
 #include <slang/ast/symbols/InstanceSymbols.h>
 #include <slang/syntax/SyntaxTree.h>
+#include <slang/syntax/SyntaxVisitor.h>
 #include <slang/syntax/AllSyntax.h>
 
 namespace slang_autos {
@@ -49,6 +50,117 @@ const char* netTypeKeyword(NetType nt) {
         default:                 return "logic";
     }
 }
+
+/// Walks an expression/statement *syntax* subtree and records which nets the
+/// module's own logic reads vs. writes, by propagating an lvalue (write) /
+/// rvalue (read) context flag. Rather than enumerating which constructs to look
+/// inside one at a time (assign, then net decl, then always block, ...), the
+/// caller hands whole construct subtrees to one classifier that handles every
+/// nested expression form uniformly.
+///
+/// We classify on *syntax*, not the elaborated AST, on purpose: AUTO macros are
+/// expanded on un-elaborated source, where the signals AUTOINST/AUTOLOGIC will
+/// create don't exist yet. A procedural block referencing such a not-yet-created
+/// net fails to bind, so the elaborated AST yields nothing — but the syntax is
+/// always present.
+///
+/// Context rules:
+///   - Assignment LHS is written; RHS is read. Compound ops (+=) read LHS too.
+///   - Element/range select: the base inherits the surrounding context, but the
+///     index/range bounds are always reads. (This is what classifies the index
+///     in `bus[sel_idx]` as a *read* of sel_idx.)
+///   - Member access / scoped names: only the base/root identifier is a net.
+///   - Every other expression is a pure read in its current context. Subroutine
+///     argument directions aren't known pre-elaboration, so call args are read
+///     conservatively (a read never wrongly promotes a net to a port).
+struct UsageClassifier : public SyntaxVisitor<UsageClassifier> {
+    std::set<std::string>& driven;
+    std::set<std::string>& consumed;
+    bool lvalue = false;
+
+    UsageClassifier(std::set<std::string>& d, std::set<std::string>& c)
+        : driven(d), consumed(c) {}
+
+    static bool isAssignment(SyntaxKind k) {
+        switch (k) {
+            case SyntaxKind::AssignmentExpression:
+            case SyntaxKind::NonblockingAssignmentExpression:
+            case SyntaxKind::AddAssignmentExpression:
+            case SyntaxKind::SubtractAssignmentExpression:
+            case SyntaxKind::MultiplyAssignmentExpression:
+            case SyntaxKind::DivideAssignmentExpression:
+            case SyntaxKind::ModAssignmentExpression:
+            case SyntaxKind::AndAssignmentExpression:
+            case SyntaxKind::OrAssignmentExpression:
+            case SyntaxKind::XorAssignmentExpression:
+            case SyntaxKind::LogicalLeftShiftAssignmentExpression:
+            case SyntaxKind::LogicalRightShiftAssignmentExpression:
+            case SyntaxKind::ArithmeticLeftShiftAssignmentExpression:
+            case SyntaxKind::ArithmeticRightShiftAssignmentExpression:
+                return true;
+            default:
+                return false;
+        }
+    }
+    static bool isCompoundAssignment(SyntaxKind k) {
+        return isAssignment(k) && k != SyntaxKind::AssignmentExpression &&
+               k != SyntaxKind::NonblockingAssignmentExpression;
+    }
+
+    void handle(const BinaryExpressionSyntax& expr) {
+        bool saved = lvalue;
+        if (isAssignment(expr.kind)) {
+            lvalue = true;
+            expr.left->visit(*this);
+            if (isCompoundAssignment(expr.kind)) {
+                lvalue = false;            // compound (+=) also reads the LHS
+                expr.left->visit(*this);
+            }
+            lvalue = false;
+            expr.right->visit(*this);
+        } else {
+            lvalue = false;                // operands of a real binary op are reads
+            expr.left->visit(*this);
+            expr.right->visit(*this);
+        }
+        lvalue = saved;
+    }
+
+    void handle(const ElementSelectExpressionSyntax& expr) {
+        expr.left->visit(*this);           // base inherits the surrounding context
+        bool saved = lvalue;
+        lvalue = false;
+        expr.select->visit(*this);         // index is always a read
+        lvalue = saved;
+    }
+
+    void handle(const MemberAccessExpressionSyntax& expr) {
+        expr.left->visit(*this);           // base inherits context; member is not a net
+    }
+
+    void handle(const ScopedNameSyntax& node) {
+        node.left->visit(*this);           // root identifier only (pkg::x, a.b)
+    }
+
+    void handle(const IdentifierNameSyntax& node) {
+        record(node.identifier.valueText());
+    }
+
+    void handle(const IdentifierSelectNameSyntax& node) {
+        record(node.identifier.valueText());   // base in current context
+        bool saved = lvalue;
+        lvalue = false;
+        for (auto* sel : node.selectors)        // selector indices are reads
+            sel->visit(*this);
+        lvalue = saved;
+    }
+
+    void record(std::string_view name) {
+        if (name.empty()) return;
+        if (lvalue) driven.insert(std::string(name));
+        else        consumed.insert(std::string(name));
+    }
+};
 } // anonymous namespace
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -341,12 +453,12 @@ void AutosAnalyzer::processMemberRecursive(
     // (AUTOLOGIC / BEGIN_AUTOLOGIC / END_AUTOMATICS markers are detected at the
     // top of this function, before the generate-construct dispatch.)
 
-    // Inside a dead generate branch: the declarations and assigns below don't
-    // exist in the elaborated design, so they must not feed into AUTOPORTS /
-    // AUTOLOGIC classification. Marker tracking above this point still runs
-    // so the dead-branch source text survives re-expansion unchanged.
+    // Inside a dead generate branch: the declarations below don't exist in the
+    // elaborated design, so they must not feed into AUTOPORTS / AUTOLOGIC
+    // classification. Marker tracking above this point still runs so the
+    // dead-branch source text survives re-expansion unchanged.
     if (in_dead_branch) {
-        adbg("skipping decl/assign tracking for member kind=%d (in dead generate branch)\n",
+        adbg("skipping decl tracking for member kind=%d (in dead generate branch)\n",
              (int)member->kind);
         return;
     }
@@ -361,85 +473,46 @@ void AutosAnalyzer::processMemberRecursive(
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Continuous assign statements - track both LHS and RHS signals
-    // LHS signals are driven internally (should not become input ports)
-    // RHS signals are consumed internally (should not become output ports)
-    // e.g., assign sys2aux_sync = {sig_a, sig_b};
-    //   - sys2aux_sync is LHS (driven internally)
-    //   - sig_a, sig_b are RHS (consumed internally)
+    // Internal read/write tracking
+    //
+    // Classify which nets this module's own logic reads (consumed) vs. writes
+    // (driven), so internally-used nets stay out of the port list. UsageClassifier
+    // walks the construct's expression syntax with an lvalue-propagating flag,
+    // handling every nested expression form uniformly — so continuous assigns,
+    // every kind of procedural block, and declaration initializers are all
+    // covered without enumerating statement/expression kinds one at a time.
     // ─────────────────────────────────────────────────────────────────────────
-    if (member->kind == SyntaxKind::ContinuousAssign) {
-        auto& assign = member->as<ContinuousAssignSyntax>();
-        for (auto* expr : assign.assignments) {
-            // Each assignment is an AssignmentExpression (which is a BinaryExpressionSyntax)
-            if (expr->kind == SyntaxKind::AssignmentExpression) {
-                auto& binary = expr->as<BinaryExpressionSyntax>();
-
-                // Extract all identifiers from LHS - these are driven internally
-                auto lhs_signals = extractIdentifiersFromSyntax(*binary.left);
-                for (const auto& sig : lhs_signals) {
-                    info.assign_driven.insert(sig);
-                }
-
-                // Extract all identifiers from RHS - these are consumed internally
-                // This prevents instance outputs that feed into assign from becoming
-                // external output ports (they're consumed locally)
-                auto rhs_signals = extractIdentifiersFromSyntax(*binary.right);
-                for (const auto& sig : rhs_signals) {
-                    info.assign_consumed.insert(sig);
-                }
-            }
+    switch (member->kind) {
+        case SyntaxKind::ContinuousAssign:
+        case SyntaxKind::AlwaysBlock:
+        case SyntaxKind::AlwaysCombBlock:
+        case SyntaxKind::AlwaysFFBlock:
+        case SyntaxKind::AlwaysLatchBlock:
+        case SyntaxKind::InitialBlock:
+        case SyntaxKind::FinalBlock: {
+            UsageClassifier classifier(info.internally_driven, info.internally_consumed);
+            member->visit(classifier);
+            break;
         }
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Net declarations with inline initializers
-    // e.g., wire unused_ok = &{1'b0, sig_a};
-    // The net name (unused_ok) is driven internally
-    // The signals in the initializer (sig_a) are consumed internally
-    // ─────────────────────────────────────────────────────────────────────────
-    if (member->kind == SyntaxKind::NetDeclaration) {
-        auto& netDecl = member->as<NetDeclarationSyntax>();
-        for (auto* declarator : netDecl.declarators) {
-            // The declarator name is driven by the initializer (if any)
-            std::string net_name(declarator->name.valueText());
-            if (!net_name.empty() && declarator->initializer) {
-                // The net itself is driven internally
-                info.assign_driven.insert(net_name);
-
-                // Extract signals from the initializer expression - these are consumed
-                auto init_signals = extractIdentifiersFromSyntax(*declarator->initializer);
-                for (const auto& sig : init_signals) {
-                    // Don't add the net name itself as consumed
-                    if (sig != net_name) {
-                        info.assign_consumed.insert(sig);
-                    }
-                }
-            }
+        case SyntaxKind::NetDeclaration:
+        case SyntaxKind::DataDeclaration: {
+            // Only the initializer expressions read nets; the declared names are
+            // tracked via existing_decls above. Visiting just the initializers
+            // avoids recording type-reference identifiers as consumed.
+            UsageClassifier classifier(info.internally_driven, info.internally_consumed);
+            auto classifyInits = [&](auto& declarators) {
+                for (auto* d : declarators)
+                    if (d->initializer)
+                        d->initializer->visit(classifier);
+            };
+            if (member->kind == SyntaxKind::NetDeclaration)
+                classifyInits(member->as<NetDeclarationSyntax>().declarators);
+            else
+                classifyInits(member->as<DataDeclarationSyntax>().declarators);
+            break;
         }
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Data declarations with inline initializers (logic/reg with assignment)
-    // e.g., logic unused_ok = &{1'b0, sig_a};
-    // ─────────────────────────────────────────────────────────────────────────
-    if (member->kind == SyntaxKind::DataDeclaration) {
-        auto& dataDecl = member->as<DataDeclarationSyntax>();
-        for (auto* declarator : dataDecl.declarators) {
-            std::string var_name(declarator->name.valueText());
-            if (!var_name.empty() && declarator->initializer) {
-                // The variable itself is driven internally
-                info.assign_driven.insert(var_name);
-
-                // Extract signals from the initializer expression - these are consumed
-                auto init_signals = extractIdentifiersFromSyntax(*declarator->initializer);
-                for (const auto& sig : init_signals) {
-                    if (sig != var_name) {
-                        info.assign_consumed.insert(sig);
-                    }
-                }
-            }
-        }
+        default:
+            break;
     }
 }
 
@@ -506,10 +579,15 @@ AutosAnalyzer::collectModuleInfo(const ModuleDeclarationSyntax& module) {
     bool in_autologic_block = false;
 
     // Populate dead_generate_blocks_ from the elaborated AST so the parser
-    // walk below can skip assign/decl tracking inside pruned branches.
+    // walk below can skip declaration / read-write tracking inside pruned
+    // branches.
     dead_generate_blocks_.clear();
     collectDeadGenerateBlocks(module);
 
+    // The member walk both detects markers and (via UsageClassifier) records
+    // which nets the module's own logic reads vs. writes into
+    // internally_consumed / internally_driven, which the filters below use to
+    // keep internally-used nets out of the port list.
     for (auto* member : module.members) {
         processMemberRecursive(member, info, in_autologic_block, /*in_dead_branch=*/false);
     }
@@ -958,31 +1036,31 @@ void AutosAnalyzer::generateAutoportsReplacement(
     auto outputs = aggregator_.getExternalOutputNets();
     auto inouts = aggregator_.getInoutNets();
 
-    // Filter existing ports, local declarations, and assign-related signals
+    // Filter existing ports, local declarations, and internally-used signals
     // - existing_ports: ports declared before /*AUTOPORTS*/ (should not be regenerated)
     // - existing_decls: local variable/net declarations (should not become ports)
-    // - assign_driven: signals on LHS of assign statements (driven internally, not inputs)
-    // - assign_consumed: signals on RHS of assign statements (consumed internally, not outputs)
+    // - internally_driven: nets written by this module's logic (driven internally, not inputs)
+    // - internally_consumed: nets read by this module's logic (consumed internally, not outputs)
 
-    // Filter for inputs: exclude existing, declared, and assign-driven signals
+    // Filter for inputs: exclude existing, declared, and internally-driven nets
     auto filter_inputs = [&](std::vector<NetInfo>& nets) {
         nets.erase(std::remove_if(nets.begin(), nets.end(),
             [&](const NetInfo& n) {
                 return info.autoports.existing_ports.count(n.name) ||
                        info.existing_decls.count(n.name) ||
-                       info.assign_driven.count(n.name);
+                       info.internally_driven.count(n.name);
             }),
             nets.end());
     };
 
-    // Filter for outputs: exclude existing, declared, and assign-consumed signals
-    // (signals consumed on RHS of assign are used internally, not external outputs)
+    // Filter for outputs: exclude existing, declared, and internally-consumed nets
+    // (nets read by this module's own logic are used internally, not external outputs)
     auto filter_outputs = [&](std::vector<NetInfo>& nets) {
         nets.erase(std::remove_if(nets.begin(), nets.end(),
             [&](const NetInfo& n) {
                 return info.autoports.existing_ports.count(n.name) ||
                        info.existing_decls.count(n.name) ||
-                       info.assign_consumed.count(n.name);
+                       info.internally_consumed.count(n.name);
             }),
             nets.end());
     };
@@ -993,8 +1071,8 @@ void AutosAnalyzer::generateAutoportsReplacement(
             [&](const NetInfo& n) {
                 return info.autoports.existing_ports.count(n.name) ||
                        info.existing_decls.count(n.name) ||
-                       info.assign_driven.count(n.name) ||
-                       info.assign_consumed.count(n.name);
+                       info.internally_driven.count(n.name) ||
+                       info.internally_consumed.count(n.name);
             }),
             nets.end());
     };
@@ -1327,10 +1405,10 @@ std::string AutosAnalyzer::generateAutologicDecls(const CollectedInfo& info) {
         }
     }
 
-    // Add signals that are driven by assign statements but consumed by instances.
+    // Add nets driven by this module's own logic but consumed by an instance.
     // These aren't "internal" by the driven_by_instance && consumed_by_instance rule,
     // but they DO need declarations because they're used by instances.
-    for (const auto& sig_name : info.assign_driven) {
+    for (const auto& sig_name : info.internally_driven) {
         if (existing_decls.count(sig_name) || already_added.count(sig_name)) {
             continue;  // Already declared or already added
         }
@@ -1342,10 +1420,11 @@ std::string AutosAnalyzer::generateAutologicDecls(const CollectedInfo& info) {
         }
     }
 
-    // Add signals that are consumed by assign statements (RHS) but driven by instances.
+    // Add nets read by this module's own logic but driven by an instance.
     // These are internal wires that need declarations.
-    // Example: assign sys2aux = {ctrl_sig, ...}; where ctrl_sig is an instance output
-    for (const auto& sig_name : info.assign_consumed) {
+    // Example: an instance output used as a bit-select index inside always_comb,
+    // or assign sys2aux = {ctrl_sig, ...}; where ctrl_sig is an instance output.
+    for (const auto& sig_name : info.internally_consumed) {
         if (existing_decls.count(sig_name) || already_added.count(sig_name)) {
             continue;  // Already declared or already added
         }

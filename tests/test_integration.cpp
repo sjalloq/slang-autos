@@ -2340,6 +2340,91 @@ TEST_CASE("Integration - assign RHS signals should NOT become output AUTOPORTS",
     CHECK(autologic_section.find("sig_b") != std::string::npos);
 }
 
+TEST_CASE("Integration - instance output used as bit-select index in always_comb is internal", "[integration]") {
+    // When an instance output is consumed inside a procedural block (always_comb)
+    // -- in particular as a bit-select INDEX, e.g. data_in[sel_idx] -- it is used
+    // internally and must NOT appear as an external output port in AUTOPORTS.
+    // Instead it should be declared as an internal wire in AUTOLOGIC.
+    //
+    // Reproduces the real-world bug where `phy_shared_clkreq_sel` (a sub-module
+    // output) was incorrectly added to the parent's port list because the analyzer
+    // does not track signals consumed inside procedural blocks.
+    auto top_sv = getFixturePath("autoports_always_bitselect/top.sv");
+    auto lib_dir = getFixturePath("autoports_always_bitselect/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    REQUIRE(result.success);
+
+    auto autoports_start = result.modified_content.find("/*AUTOPORTS*/");
+    auto autoports_end = result.modified_content.find(");", autoports_start);
+    std::string autoports_section =
+        result.modified_content.substr(autoports_start, autoports_end - autoports_start);
+
+    // sel_idx is consumed internally (as a bit-select index) -> must NOT be a port.
+    CHECK(autoports_section.find("sel_idx") == std::string::npos);
+
+    // prod_data is a genuine external output (not consumed) -> must still be a port.
+    CHECK(autoports_section.find("prod_data") != std::string::npos);
+
+    // clk is a genuine external input -> must still be a port.
+    CHECK(autoports_section.find("clk") != std::string::npos);
+
+    // sel_idx should be declared as an internal wire in AUTOLOGIC instead.
+    // A wire declaration ends in ';' (e.g. "logic [1:0] sel_idx;") whereas the
+    // buggy port line ends in ',' -- so matching "sel_idx;" only hits the decl.
+    CHECK(result.modified_content.find("sel_idx;") != std::string::npos);
+}
+
+TEST_CASE("Integration - net driven by always_comb but consumed by instance is internal", "[integration]") {
+    // The complement of the bit-select case: a net written (LHS) inside a
+    // procedural block but consumed by an instance input is driven internally
+    // and must NOT appear as an input port in AUTOPORTS. It should be declared
+    // as an internal wire in AUTOLOGIC instead.
+    auto top_sv = getFixturePath("autoports_always_driven/top.sv");
+    auto lib_dir = getFixturePath("autoports_always_driven/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, /*dry_run=*/true);
+    REQUIRE(result.success);
+
+    auto autoports_start = result.modified_content.find("/*AUTOPORTS*/");
+    auto autoports_end = result.modified_content.find(");", autoports_start);
+    std::string autoports_section =
+        result.modified_content.substr(autoports_start, autoports_end - autoports_start);
+
+    // ctrl is driven internally (always_comb LHS) -> must NOT be an input port.
+    CHECK(autoports_section.find("ctrl") == std::string::npos);
+
+    // result is a genuine external output -> must still be a port.
+    CHECK(autoports_section.find("result") != std::string::npos);
+
+    // ctrl should be declared as an internal wire in AUTOLOGIC instead.
+    CHECK(result.modified_content.find("ctrl;") != std::string::npos);
+}
+
 // =============================================================================
 // Packed Array Tests
 // =============================================================================

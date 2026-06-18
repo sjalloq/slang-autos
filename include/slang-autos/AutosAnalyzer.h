@@ -132,8 +132,14 @@ private:
         bool has_autologic = false;
         bool has_autoports = false;
         std::set<std::string> existing_decls;
-        std::set<std::string> assign_driven;    ///< Signals on LHS of assign statements (driven internally)
-        std::set<std::string> assign_consumed;  ///< Signals on RHS of assign statements (consumed internally)
+        /// Nets WRITTEN by this module's own logic (assignment LHS, lvalue/ref
+        /// subroutine args) anywhere — procedural blocks, continuous assigns,
+        /// initializers. Driven internally, so they must not become input ports.
+        std::set<std::string> internally_driven;
+        /// Nets READ by this module's own logic (assignment RHS, select indices,
+        /// input subroutine args, any rvalue context). Consumed internally, so
+        /// they must not become output ports.
+        std::set<std::string> internally_consumed;
     };
 
     // ════════════════════════════════════════════════════════════════════════
