@@ -235,6 +235,15 @@ private:
     /// Returns true if original syntax should be preserved (opposite of resolved_ranges)
     [[nodiscard]] bool preferOriginalSyntax() const { return !options_.resolved_ranges; }
 
+    /// Decide whether a comma must be inserted before generated ports, by
+    /// scanning the source backwards from an AUTO marker for the last real port
+    /// connection. Whitespace and preprocessor directive lines (e.g. `ifdef /
+    /// `endif placed between the manual ports and the marker) are skipped, so a
+    /// trailing comma sitting before such a directive is still found.
+    /// @param marker_start Source offset of the marker's first character
+    /// @return true if the preceding real content does not end in a comma
+    [[nodiscard]] bool needsLeadingComma(size_t marker_start) const;
+
     // ════════════════════════════════════════════════════════════════════════
     // Member data
     // ════════════════════════════════════════════════════════════════════════

@@ -900,6 +900,46 @@ void AutosAnalyzer::generateReplacements(
     }
 }
 
+bool AutosAnalyzer::needsLeadingComma(size_t marker_start) const {
+    // Scan backwards from the marker for the last real, non-whitespace
+    // character. Preprocessor directive lines (whose first non-whitespace
+    // character is a backtick, e.g. `ifdef / `endif) are skipped entirely, so a
+    // trailing comma placed before such a directive is still recognised and we
+    // don't insert a spurious comma after the marker.
+    size_t pos = marker_start;
+    while (pos > 0) {
+        char c = source_content_[pos - 1];
+        if (c == ',') {
+            return false;
+        }
+        if (std::isspace(static_cast<unsigned char>(c))) {
+            --pos;
+            continue;
+        }
+
+        // Found a non-whitespace, non-comma character at index (pos - 1).
+        // Determine whether it lies on a preprocessor directive line.
+        size_t line_begin = pos - 1;
+        while (line_begin > 0 && source_content_[line_begin - 1] != '\n') {
+            --line_begin;
+        }
+        size_t first = line_begin;
+        while (first < pos &&
+               std::isspace(static_cast<unsigned char>(source_content_[first]))) {
+            ++first;
+        }
+        if (first < source_content_.size() && source_content_[first] == '`') {
+            // Preprocessor directive line - skip it and keep scanning.
+            pos = line_begin;
+            continue;
+        }
+
+        // Real content that isn't a comma - a comma is needed.
+        return true;
+    }
+    return true;
+}
+
 void AutosAnalyzer::generateAutoInstReplacement(
     const AutoInstInfo& inst,
     const std::vector<PortInfo>& ports) {
@@ -915,25 +955,11 @@ void AutosAnalyzer::generateAutoInstReplacement(
     std::string port_text = generatePortConnections(inst, ports);
 
     // If there are manual ports AND auto ports to generate, check if we need
-    // to add a comma between them. Look backwards from AUTOINST marker for the
-    // last non-whitespace character - if it's not a comma, we need to add one.
+    // to add a comma between them. Look backwards from the AUTOINST marker for
+    // the last real port connection - if it doesn't end in a comma, add one.
     if (!inst.manual_ports.empty() && auto_port_count > 0) {
         size_t marker_start = inst.marker_end - markers::AUTOINST.length();
-        bool needs_comma = true;
-
-        // Search backwards for last non-whitespace character
-        for (size_t i = marker_start; i > 0; --i) {
-            char c = source_content_[i - 1];
-            if (c == ',') {
-                needs_comma = false;
-                break;
-            } else if (!std::isspace(static_cast<unsigned char>(c))) {
-                // Found non-whitespace that isn't comma - need to add comma
-                break;
-            }
-        }
-
-        if (needs_comma) {
+        if (needsLeadingComma(marker_start)) {
             port_text = "," + port_text;
         }
     }
@@ -1139,20 +1165,7 @@ void AutosAnalyzer::generateAutoportsReplacement(
     bool needs_leading_comma = false;
     if (!all_ports.empty() && !info.autoports.existing_ports.empty()) {
         size_t marker_start = info.autoports.marker_end - markers::AUTOPORTS.length();
-
-        // Search backwards for the last non-whitespace character
-        for (size_t i = marker_start; i > 0; --i) {
-            char c = source_content_[i - 1];
-            if (c == ',') {
-                // Found a trailing comma - no need to add one
-                needs_leading_comma = false;
-                break;
-            } else if (!std::isspace(static_cast<unsigned char>(c))) {
-                // Found non-whitespace that isn't comma - need to add one
-                needs_leading_comma = true;
-                break;
-            }
-        }
+        needs_leading_comma = needsLeadingComma(marker_start);
     }
 
     // Generate port list with commas between items
