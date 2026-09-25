@@ -360,6 +360,79 @@ TEST_CASE("Integration - ifdef block before AUTOINST does not add extra comma", 
     CHECK(result.modified_content.find(".data_out") != std::string::npos);
 }
 
+TEST_CASE("Integration - trailing comment before AUTOINST does not add extra comma",
+          "[integration]") {
+    // Comments after the last manual port connection (both // and /* */ styles)
+    // must not fool the backwards comma scan: the last real port already ends
+    // with a comma, so no comma should be inserted after the marker.
+    auto top_sv = getFixturePath("autoinst_comment_comma/top.sv");
+    auto lib_dir = getFixturePath("autoinst_comment_comma/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    bool loaded = tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv"
+    });
+
+    REQUIRE(loaded);
+
+    auto result = tool.expandFile(top_sv, true);
+
+    CHECK(result.success);
+    CHECK(result.autoinst_count == 1);
+
+    // The bug: a spurious comma was inserted right after the marker.
+    CHECK(result.modified_content.find("/*AUTOINST*/,") == std::string::npos);
+
+    // Auto ports should still be generated.
+    CHECK(result.modified_content.find(".rst_n") != std::string::npos);
+    CHECK(result.modified_content.find(".data_in") != std::string::npos);
+    CHECK(result.modified_content.find(".data_out") != std::string::npos);
+}
+
+TEST_CASE("Integration - generate branch with trailing comments before AUTOINST",
+          "[integration]") {
+    // Instances inside generate branches selected by a -G parameter override,
+    // with trailing per-port comments before /*AUTOINST*/. Both the elaborated
+    // and the dead branch must expand without a spurious comma after the marker.
+    auto top_sv = getFixturePath("autoinst_generate_comment_comma/top.sv");
+    auto lib_dir = getFixturePath("autoinst_generate_comment_comma/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    for (const char* mode : {"MODE=0", "MODE=1"}) {
+        INFO("Parameter override: " << mode);
+
+        AutosTool tool;
+        bool loaded = tool.loadWithArgs({
+            top_sv.string(),
+            "-y", lib_dir.string(),
+            "+libext+.sv",
+            "-G", mode
+        });
+
+        REQUIRE(loaded);
+
+        auto result = tool.expandFile(top_sv, true);
+
+        CHECK(result.success);
+        CHECK(result.autoinst_count == 2);
+
+        // The bug: a spurious comma was inserted right after the marker.
+        CHECK(result.modified_content.find("/*AUTOINST*/,") == std::string::npos);
+
+        // Auto ports should still be generated in both branches.
+        CHECK(result.modified_content.find(".rst_n") != std::string::npos);
+        CHECK(result.modified_content.find(".data_in") != std::string::npos);
+        CHECK(result.modified_content.find(".done") != std::string::npos);
+    }
+}
+
 TEST_CASE("Integration - parameterized port widths preserve original syntax", "[integration]") {
     // AUTOLOGIC should preserve original syntax (e.g., [WIDTH-1:0])
     // The user is responsible for ensuring parameters are in scope

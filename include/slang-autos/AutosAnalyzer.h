@@ -235,11 +235,18 @@ private:
     /// Returns true if original syntax should be preserved (opposite of resolved_ranges)
     [[nodiscard]] bool preferOriginalSyntax() const { return !options_.resolved_ranges; }
 
+    /// Find the last source character before @p end that is real code, i.e. the
+    /// last character of the preceding port connection or declaration. Comments
+    /// (`//` and `/* */`), string literals and preprocessor directive lines
+    /// (e.g. `ifdef / `endif) are skipped, so trailing per-port comments and
+    /// conditional-compilation blocks between the last port and an AUTO marker
+    /// don't hide its trailing comma.
+    /// @param end Source offset to scan up to (exclusive)
+    /// @return Offset of the last real character, or nullopt if there is none
+    [[nodiscard]] std::optional<size_t> lastCodeCharBefore(size_t end) const;
+
     /// Decide whether a comma must be inserted before generated ports, by
-    /// scanning the source backwards from an AUTO marker for the last real port
-    /// connection. Whitespace and preprocessor directive lines (e.g. `ifdef /
-    /// `endif placed between the manual ports and the marker) are skipped, so a
-    /// trailing comma sitting before such a directive is still found.
+    /// looking at the last real character before an AUTO marker.
     /// @param marker_start Source offset of the marker's first character
     /// @return true if the preceding real content does not end in a comma
     [[nodiscard]] bool needsLeadingComma(size_t marker_start) const;

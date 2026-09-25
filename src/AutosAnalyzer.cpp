@@ -900,44 +900,87 @@ void AutosAnalyzer::generateReplacements(
     }
 }
 
-bool AutosAnalyzer::needsLeadingComma(size_t marker_start) const {
-    // Scan backwards from the marker for the last real, non-whitespace
-    // character. Preprocessor directive lines (whose first non-whitespace
-    // character is a backtick, e.g. `ifdef / `endif) are skipped entirely, so a
-    // trailing comma placed before such a directive is still recognised and we
-    // don't insert a spurious comma after the marker.
-    size_t pos = marker_start;
-    while (pos > 0) {
-        char c = source_content_[pos - 1];
-        if (c == ',') {
-            return false;
+std::optional<size_t> AutosAnalyzer::lastCodeCharBefore(size_t end) const {
+    // Scanning backwards can't tell code from comment text (`//` and `/* */`
+    // are only unambiguous read left to right), so scan forwards from the start
+    // of the file and remember the last character that was real code.
+    end = std::min(end, source_content_.size());
+
+    std::optional<size_t> last;
+    bool line_has_code = false;  // seen real code on the current line
+
+    for (size_t i = 0; i < end;) {
+        char c = source_content_[i];
+
+        if (c == '\n') {
+            line_has_code = false;
+            ++i;
+            continue;
         }
         if (std::isspace(static_cast<unsigned char>(c))) {
-            --pos;
+            ++i;
             continue;
         }
 
-        // Found a non-whitespace, non-comma character at index (pos - 1).
-        // Determine whether it lies on a preprocessor directive line.
-        size_t line_begin = pos - 1;
-        while (line_begin > 0 && source_content_[line_begin - 1] != '\n') {
-            --line_begin;
-        }
-        size_t first = line_begin;
-        while (first < pos &&
-               std::isspace(static_cast<unsigned char>(source_content_[first]))) {
-            ++first;
-        }
-        if (first < source_content_.size() && source_content_[first] == '`') {
-            // Preprocessor directive line - skip it and keep scanning.
-            pos = line_begin;
+        // Line comment - skip to the end of the line.
+        if (c == '/' && i + 1 < end && source_content_[i + 1] == '/') {
+            while (i < end && source_content_[i] != '\n') {
+                ++i;
+            }
             continue;
         }
 
-        // Real content that isn't a comma - a comma is needed.
-        return true;
+        // Block comment - skip to the closing delimiter, which may be lines away.
+        if (c == '/' && i + 1 < end && source_content_[i + 1] == '*') {
+            i += 2;
+            while (i + 1 < end &&
+                   !(source_content_[i] == '*' && source_content_[i + 1] == '/')) {
+                if (source_content_[i] == '\n') {
+                    line_has_code = false;
+                }
+                ++i;
+            }
+            i = std::min(i + 2, end);
+            continue;
+        }
+
+        // Preprocessor directive line (`ifdef / `endif / `define ...) - skip it
+        // entirely so a trailing comma placed before it is still found. Only a
+        // backtick that opens the line is a directive; one mid-line is a macro
+        // usage, which is real code.
+        if (c == '`' && !line_has_code) {
+            while (i < end && source_content_[i] != '\n') {
+                ++i;
+            }
+            continue;
+        }
+
+        // String literal - skip its body so `//` or a comma inside it isn't
+        // mistaken for source text.
+        if (c == '"') {
+            ++i;
+            while (i < end && source_content_[i] != '"' && source_content_[i] != '\n') {
+                i += (source_content_[i] == '\\') ? 2 : 1;
+            }
+            last = std::min(i, end - 1);
+            line_has_code = true;
+            if (i < end) {
+                ++i;
+            }
+            continue;
+        }
+
+        last = i;
+        line_has_code = true;
+        ++i;
     }
-    return true;
+
+    return last;
+}
+
+bool AutosAnalyzer::needsLeadingComma(size_t marker_start) const {
+    auto last = lastCodeCharBefore(marker_start);
+    return !last.has_value() || source_content_[*last] != ',';
 }
 
 void AutosAnalyzer::generateAutoInstReplacement(
@@ -1191,20 +1234,28 @@ void AutosAnalyzer::generateAutoportsReplacement(
     //   input logic phy_status,
     //   /*AUTOPORTS*/);  <-- comma before closing paren is invalid
     if (all_ports.empty() && !info.autoports.existing_ports.empty()) {
-        // Search backwards from the marker start to find and remove trailing comma
         // marker_start is the position of '/' in /*AUTOPORTS*/
         size_t marker_start = info.autoports.marker_end - markers::AUTOPORTS.length();
 
-        // Search backwards for the comma, skipping whitespace
-        for (size_t i = marker_start; i > 0; --i) {
-            char c = source_content_[i - 1];
-            if (c == ',') {
-                // Found the trailing comma - extend replacement to include it
-                replacement_start = i - 1;
-                break;
-            } else if (!std::isspace(static_cast<unsigned char>(c))) {
-                // Found non-whitespace that isn't comma - stop searching
-                break;
+        auto last_code = lastCodeCharBefore(marker_start);
+        if (last_code && source_content_[*last_code] == ',') {
+            bool only_space_before_marker = std::all_of(
+                source_content_.begin() + static_cast<ptrdiff_t>(*last_code) + 1,
+                source_content_.begin() + static_cast<ptrdiff_t>(marker_start),
+                [](char c) { return std::isspace(static_cast<unsigned char>(c)); });
+
+            if (only_space_before_marker) {
+                // Extend the replacement back over the comma and the whitespace.
+                replacement_start = *last_code;
+            } else {
+                // Comments or directives sit between the comma and the marker -
+                // drop just the comma so that text is preserved.
+                replacements_.push_back({
+                    *last_code,
+                    *last_code + 1,
+                    "",
+                    "Remove trailing comma before empty AUTOPORTS"
+                });
             }
         }
     }
