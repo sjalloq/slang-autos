@@ -1,8 +1,9 @@
 #pragma once
 
+#include <map>
 #include <set>
 #include <string>
-#include <unordered_set>
+#include <utility>
 #include <vector>
 #include <optional>
 
@@ -150,17 +151,7 @@ private:
     CollectedInfo collectModuleInfo(const slang::syntax::ModuleDeclarationSyntax& module);
     void processMemberRecursive(const slang::syntax::MemberSyntax* member,
                                 CollectedInfo& info,
-                                bool& in_autologic_block,
-                                bool in_dead_branch);
-
-    /// Walk the elaborated AST for this module and populate
-    /// dead_generate_blocks_ with syntax pointers for every generate block
-    /// whose branch was not chosen during elaboration. Used by the parser to
-    /// skip assign/declaration tracking inside dead branches — those
-    /// statements don't exist in the elaborated design, and recording them
-    /// corrupts AUTOPORTS/AUTOLOGIC classification.
-    void collectDeadGenerateBlocks(const slang::syntax::ModuleDeclarationSyntax& module);
-    void collectDeadBlocksFromScope(const slang::ast::Scope& scope);
+                                bool& in_autologic_block);
     void resolvePortsAndSignals(const slang::syntax::ModuleDeclarationSyntax& module,
                                 CollectedInfo& info);
     void generateReplacements(const slang::syntax::ModuleDeclarationSyntax& module,
@@ -170,11 +161,22 @@ private:
     // Replacement generators
     // ════════════════════════════════════════════════════════════════════════
 
+    /// One port that AUTOPORTS will emit: direction keyword and net.
+    using AutoportEntry = std::pair<std::string, NetInfo>;
+
     void generateAutoInstReplacement(const AutoInstInfo& inst,
                                      const std::vector<PortInfo>& ports);
-    void generateAutologicReplacement(const CollectedInfo& info);
-    void generateAutoportsReplacement(const slang::syntax::ModuleDeclarationSyntax& module,
-                                      const CollectedInfo& info);
+
+    /// Emit the AUTOLOGIC block. @p port_names are the nets AUTOPORTS is
+    /// emitting for this module; they are never redeclared as internal logic.
+    void generateAutologicReplacement(const CollectedInfo& info,
+                                      const std::set<std::string>& port_names);
+
+    /// Classify, filter and order the nets AUTOPORTS should emit.
+    std::vector<AutoportEntry> computeAutoportsList(const CollectedInfo& info);
+
+    void generateAutoportsReplacement(const CollectedInfo& info,
+                                      const std::vector<AutoportEntry>& all_ports);
 
     // ════════════════════════════════════════════════════════════════════════
     // AST position helpers - all position finding goes through these
@@ -198,7 +200,12 @@ private:
     // Other helpers
     // ════════════════════════════════════════════════════════════════════════
 
-    std::vector<PortInfo> getModulePorts(const std::string& module_name);
+    /// Resolve the ports of @p module_name as instantiated at @p site_node
+    /// (the instantiation statement), so the site's own parameter overrides
+    /// apply and modules living only in pruned generate branches still
+    /// resolve. Results are cached per site.
+    std::vector<PortInfo> getModulePorts(const std::string& module_name,
+                                         const slang::syntax::SyntaxNode* site_node);
     std::vector<PortConnection> buildConnections(const AutoInstInfo& inst,
                                                   const std::vector<PortInfo>& ports);
 
@@ -216,7 +223,8 @@ private:
 
     std::string generatePortConnections(const AutoInstInfo& inst,
                                         const std::vector<PortInfo>& ports);
-    std::string generateAutologicDecls(const CollectedInfo& info);
+    std::string generateAutologicDecls(const CollectedInfo& info,
+                                       const std::set<std::string>& port_names);
     std::string detectIndent(const slang::syntax::SyntaxNode& node) const;
 
     /// Adapt signal expression for width mismatches.
@@ -263,13 +271,10 @@ private:
     std::string_view source_content_;  // Original source for comparison
     std::vector<Replacement> replacements_;
 
-    /// Source offsets of generate blocks pruned by elaboration for the
-    /// current module. Populated per-module by collectDeadGenerateBlocks().
-    /// Offsets rather than syntax pointers because Tool.cpp re-parses the
-    /// source independently of the slang compilation's tree, so pointer
-    /// equality can't cross that boundary — but offsets into the same
-    /// source text are consistent.
-    std::unordered_set<size_t> dead_generate_blocks_;
+    /// Port lookups keyed by (module name, site offset). On-demand
+    /// instantiation for pruned branches is not free, and each site is
+    /// queried once when resolving signals and again when generating text.
+    std::map<std::pair<std::string, size_t>, std::vector<PortInfo>> port_cache_;
 
     int autoinst_count_ = 0;
     int autologic_count_ = 0;

@@ -1,7 +1,9 @@
 #pragma once
 
+#include <cstddef>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "Diagnostics.h"
@@ -46,17 +48,34 @@ struct PortInfo {
     }
 };
 
+/// Identifies one instantiation site in a source file, so that port lookup can
+/// honour that site's own parameter overrides.
+struct PortLookupSite {
+    std::string_view source_text;  ///< Full text of the file containing the site
+    size_t offset = 0;             ///< Offset of the HierarchyInstantiationSyntax start
+};
+
 /// Extract port information for a module from a slang compilation.
-/// Searches top instances for submodule instantiations matching the given name.
+///
+/// The elaborated design is searched first for an instance of the module,
+/// preferring the instance created from @p site when one is given. If no
+/// elaborated instance exists, e.g. the module is only instantiated inside a
+/// generate branch that elaboration pruned, the module definition is looked up
+/// and instantiated on demand in the top module's scope, using the site's own
+/// parameter assignments where available. Every branch therefore resolves in
+/// a single pass, whatever parameter values were chosen.
+///
 /// @param compilation The slang compilation containing parsed design (non-const due to lazy eval)
 /// @param module_name Name of the module to look up
 /// @param diagnostics Optional diagnostic collector for errors/warnings
 /// @param strictness Error vs warning for missing modules
+/// @param site Optional instantiation site whose parameter overrides apply
 /// @return Vector of port information (empty if module not found)
 [[nodiscard]] std::vector<PortInfo> getModulePortsFromCompilation(
     slang::ast::Compilation& compilation,
     const std::string& module_name,
     DiagnosticCollector* diagnostics = nullptr,
-    StrictnessMode strictness = StrictnessMode::Lenient);
+    StrictnessMode strictness = StrictnessMode::Lenient,
+    const PortLookupSite* site = nullptr);
 
 } // namespace slang_autos

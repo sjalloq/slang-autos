@@ -462,9 +462,80 @@ TEST_CASE("Integration - macro port widths are copied once, not per expanded tok
     CHECK(result.modified_content.find("`NFUNC_WD4") == std::string::npos);
 }
 
+TEST_CASE("Integration - generate branches expand in a single pass regardless of -G",
+          "[integration][generate]") {
+    // Modules instantiated only inside one generate branch must still be
+    // expanded, and AUTOPORTS must carry the union of both branches, so the
+    // output is identical with no override, MODE=0 and MODE=1.
+    auto top_sv = getFixturePath("generate_branch_union/top.sv");
+    auto lib_dir = getFixturePath("generate_branch_union/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    std::vector<std::vector<std::string>> variants = {
+        {},
+        {"-G", "MODE=0"},
+        {"-G", "MODE=1"},
+    };
+
+    std::vector<std::string> outputs;
+    for (const auto& extra : variants) {
+        INFO("Variant with " << extra.size() << " extra args"
+             << (extra.size() == 2 ? " (" + extra[1] + ")" : ""));
+
+        std::vector<std::string> args = {
+            top_sv.string(), "-y", lib_dir.string(), "+libext+.sv"
+        };
+        args.insert(args.end(), extra.begin(), extra.end());
+
+        AutosTool tool;
+        REQUIRE(tool.loadWithArgs(args));
+
+        auto result = tool.expandFile(top_sv, true);
+        CHECK(result.success);
+        CHECK(result.autoinst_count == 2);
+
+        const auto& out = result.modified_content;
+
+        // Both AUTOINSTs expanded.
+        CHECK(out.find(".a_in") != std::string::npos);
+        CHECK(out.find(".a_out") != std::string::npos);
+        CHECK(out.find(".b_in") != std::string::npos);
+        CHECK(out.find(".b_out") != std::string::npos);
+
+        // AUTOPORTS carries the union of both branches.
+        auto ports_start = out.find("/*AUTOPORTS*/");
+        REQUIRE(ports_start != std::string::npos);
+        auto ports_end = out.find(");", ports_start);
+        REQUIRE(ports_end != std::string::npos);
+        auto ports = out.substr(ports_start, ports_end - ports_start);
+        CHECK(ports.find("a_in") != std::string::npos);
+        CHECK(ports.find("a_out") != std::string::npos);
+        CHECK(ports.find("b_in") != std::string::npos);
+        CHECK(ports.find("b_out") != std::string::npos);
+
+        // The instance overrides W to 16; the child's parameter name is not
+        // in scope here, so the width must be resolved.
+        CHECK(ports.find("[15:0] a_out") != std::string::npos);
+        CHECK(ports.find("[W-1:0]") == std::string::npos);
+
+        // Nothing should have been flagged as missing.
+        CHECK_FALSE(tool.diagnostics().hasErrors());
+
+        outputs.push_back(out);
+    }
+
+    REQUIRE(outputs.size() == 3);
+    CHECK(outputs[0] == outputs[1]);
+    CHECK(outputs[0] == outputs[2]);
+}
+
 TEST_CASE("Integration - parameterized port widths preserve original syntax", "[integration]") {
-    // AUTOLOGIC should preserve original syntax (e.g., [WIDTH-1:0])
-    // The user is responsible for ensuring parameters are in scope
+    // Original dimension syntax is preserved unless it names a parameter that
+    // exists only in the child. Here WIDTH is submod's own parameter and
+    // top_autologic has no WIDTH, so copying [WIDTH-1:0] would produce invalid
+    // SystemVerilog; the resolved width is used instead.
     auto top_sv = getFixturePath("param_width/top_autologic.sv");
     auto lib_dir = getFixturePath("param_width/lib");
 
@@ -485,9 +556,8 @@ TEST_CASE("Integration - parameterized port widths preserve original syntax", "[
     CHECK(result.success);
     CHECK(result.autologic_count == 1);
 
-    // internal_data should be declared with original syntax [WIDTH-1:0]
-    // Note: User must ensure WIDTH is in scope for valid SystemVerilog
-    CHECK(result.modified_content.find("logic  [WIDTH-1:0] internal_data") != std::string::npos);
+    CHECK(result.modified_content.find("logic [7:0] internal_data") != std::string::npos);
+    CHECK(result.modified_content.find("[WIDTH-1:0]") == std::string::npos);
 }
 
 TEST_CASE("Integration - macro port widths preserve original syntax", "[integration]") {

@@ -187,6 +187,7 @@ void AutosAnalyzer::analyze(const std::shared_ptr<SyntaxTree>& tree,
     autologic_count_ = 0;
     autoports_count_ = 0;
     source_content_ = source_content;
+    port_cache_.clear();
 
     auto& root = tree->root();
 
@@ -206,12 +207,11 @@ void AutosAnalyzer::processModule(const ModuleDeclarationSyntax& module) {
     CollectedInfo info = collectModuleInfo(module);
 
     adbg("processModule '%.*s': autoinsts=%zu manual_insts=%zu "
-         "has_autologic=%d has_autoports=%d (dead_blocks=%zu)\n",
+         "has_autologic=%d has_autoports=%d\n",
          (int)module.header->name.valueText().size(),
          module.header->name.valueText().data(),
          info.autoinsts.size(), info.manual_insts.size(),
-         info.has_autologic ? 1 : 0, info.has_autoports ? 1 : 0,
-         dead_generate_blocks_.size());
+         info.has_autologic ? 1 : 0, info.has_autoports ? 1 : 0);
 
     if (info.autoinsts.empty() && !info.has_autologic && !info.has_autoports) {
         return;
@@ -228,16 +228,14 @@ void AutosAnalyzer::processModule(const ModuleDeclarationSyntax& module) {
 // Helper to recursively process a single member for AUTOINST/AUTOLOGIC markers.
 // This allows AUTOINST to work inside generate blocks.
 //
-// `in_dead_branch` is true when the caller has already descended into a
-// generate branch that elaboration pruned. It propagates through all nested
-// constructs so downstream code (assign/decl tracking) can skip statements
-// that don't exist in the elaborated design. Marker tracking still runs in
-// dead branches so the source text survives re-expansion unchanged.
+// Every generate branch is walked, whether or not elaboration chose it. AUTO
+// expansion describes the source, not one elaboration of it: a port or net
+// used by any branch must exist regardless of which parameters are picked, and
+// the output must not change with -G overrides (verilog-mode semantics).
 void AutosAnalyzer::processMemberRecursive(
     const MemberSyntax* member,
     CollectedInfo& info,
-    bool& in_autologic_block,
-    bool in_dead_branch) {
+    bool& in_autologic_block) {
 
     if (!member) return;
 
@@ -260,8 +258,7 @@ void AutosAnalyzer::processMemberRecursive(
         if (auto pos = findMarkerInTrivia(tok, markers::AUTOLOGIC)) {
             info.has_autologic = true;
             info.autologic.marker_end = pos->second;
-            adbg("AUTOLOGIC marker detected (member kind=%d, in_dead_branch=%d)\n",
-                 (int)member->kind, in_dead_branch ? 1 : 0);
+            adbg("AUTOLOGIC marker detected (member kind=%d)\n", (int)member->kind);
         }
         if (auto pos = findMarkerInTrivia(tok, markers::BEGIN_AUTOLOGIC)) {
             in_autologic_block = true;
@@ -286,33 +283,28 @@ void AutosAnalyzer::processMemberRecursive(
     if (member->kind == SyntaxKind::GenerateRegion) {
         auto& region = member->as<GenerateRegionSyntax>();
         for (auto* child : region.members) {
-            processMemberRecursive(child, info, in_autologic_block, in_dead_branch);
+            processMemberRecursive(child, info, in_autologic_block);
         }
         return;
     }
 
     if (member->kind == SyntaxKind::GenerateBlock) {
         auto& block = member->as<GenerateBlockSyntax>();
-        size_t blk_off = block.sourceRange().start().offset();
-        bool matched_dead = dead_generate_blocks_.count(blk_off) > 0;
-        bool child_dead = in_dead_branch || matched_dead;
-        adbg("GenerateBlock offset=%zu matched_dead_set=%d inherited_dead=%d -> child_dead=%d\n",
-             blk_off, matched_dead ? 1 : 0, in_dead_branch ? 1 : 0, child_dead ? 1 : 0);
         for (auto* child : block.members) {
-            processMemberRecursive(child, info, in_autologic_block, child_dead);
+            processMemberRecursive(child, info, in_autologic_block);
         }
         return;
     }
 
     if (member->kind == SyntaxKind::LoopGenerate) {
         auto& loop = member->as<LoopGenerateSyntax>();
-        processMemberRecursive(loop.block, info, in_autologic_block, in_dead_branch);
+        processMemberRecursive(loop.block, info, in_autologic_block);
         return;
     }
 
     if (member->kind == SyntaxKind::IfGenerate) {
         auto& ifGen = member->as<IfGenerateSyntax>();
-        processMemberRecursive(ifGen.block, info, in_autologic_block, in_dead_branch);
+        processMemberRecursive(ifGen.block, info, in_autologic_block);
         if (ifGen.elseClause) {
             // elseClause->clause is a not_null<SyntaxNode*>, get the underlying pointer
             const SyntaxNode* clause = ifGen.elseClause->clause.get();
@@ -322,7 +314,7 @@ void AutosAnalyzer::processMemberRecursive(
                 clause->kind == SyntaxKind::IfGenerate ||
                 clause->kind == SyntaxKind::CaseGenerate ||
                 clause->kind == SyntaxKind::LoopGenerate) {
-                processMemberRecursive(static_cast<const MemberSyntax*>(clause), info, in_autologic_block, in_dead_branch);
+                processMemberRecursive(static_cast<const MemberSyntax*>(clause), info, in_autologic_block);
             }
         }
         return;
@@ -345,7 +337,7 @@ void AutosAnalyzer::processMemberRecursive(
                  clause->kind == SyntaxKind::IfGenerate ||
                  clause->kind == SyntaxKind::CaseGenerate ||
                  clause->kind == SyntaxKind::LoopGenerate)) {
-                processMemberRecursive(static_cast<const MemberSyntax*>(clause), info, in_autologic_block, in_dead_branch);
+                processMemberRecursive(static_cast<const MemberSyntax*>(clause), info, in_autologic_block);
             }
         }
         return;
@@ -453,16 +445,6 @@ void AutosAnalyzer::processMemberRecursive(
     // (AUTOLOGIC / BEGIN_AUTOLOGIC / END_AUTOMATICS markers are detected at the
     // top of this function, before the generate-construct dispatch.)
 
-    // Inside a dead generate branch: the declarations below don't exist in the
-    // elaborated design, so they must not feed into AUTOPORTS / AUTOLOGIC
-    // classification. Marker tracking above this point still runs so the
-    // dead-branch source text survives re-expansion unchanged.
-    if (in_dead_branch) {
-        adbg("skipping decl tracking for member kind=%d (in dead generate branch)\n",
-             (int)member->kind);
-        return;
-    }
-
     // ─────────────────────────────────────────────────────────────────────────
     // User declarations
     // ─────────────────────────────────────────────────────────────────────────
@@ -516,80 +498,17 @@ void AutosAnalyzer::processMemberRecursive(
     }
 }
 
-// Recursively walk an elaborated scope and collect source-text offsets of
-// GenerateBlockSymbols whose branch was pruned during elaboration.
-// Descends into live generate blocks (to catch nested dead branches) and
-// into generate block arrays (loop generate), but does not descend into
-// nested module instance bodies — only this module's own pruned branches
-// are relevant for the parser walk.
-void AutosAnalyzer::collectDeadBlocksFromScope(const slang::ast::Scope& scope) {
-    using namespace slang::ast;
-    for (auto& member : scope.members()) {
-        if (auto* block = member.as_if<GenerateBlockSymbol>()) {
-            if (block->isUninstantiated) {
-                if (auto* syntax = block->getSyntax()) {
-                    size_t off = syntax->sourceRange().start().offset();
-                    dead_generate_blocks_.insert(off);
-                    adbg("dead generate block: name='%.*s' offset=%zu (uninstantiated)\n",
-                         (int)block->name.size(), block->name.data(), off);
-                }
-                // Don't descend — everything inside is dead too, and the
-                // propagated in_dead_branch flag will cover nested blocks.
-            } else {
-                collectDeadBlocksFromScope(*block);
-            }
-        } else if (auto* array = member.as_if<GenerateBlockArraySymbol>()) {
-            for (auto* entry : array->entries) {
-                if (entry) collectDeadBlocksFromScope(*entry);
-            }
-        }
-        // Deliberately skip InstanceSymbol — child module bodies have their
-        // own generate blocks we don't care about.
-    }
-}
-
-void AutosAnalyzer::collectDeadGenerateBlocks(const ModuleDeclarationSyntax& module) {
-    using namespace slang::ast;
-    auto& root = compilation_.getRoot();
-    // Tool.cpp re-parses the source for the analyzer independently of the
-    // compilation's syntax tree, so pointer-compare on ModuleDeclarationSyntax
-    // doesn't work across the two trees. Match by module name and compare
-    // source-text offsets — both trees agree on identifiers and on offsets
-    // into the file content.
-    std::string_view target = module.header->name.valueText();
-    for (auto* topInst : root.topInstances) {
-        if (!topInst) continue;
-        if (topInst->body.getDefinition().name == target) {
-            adbg("collectDeadGenerateBlocks: matched top instance for module '%.*s'\n",
-                 (int)target.size(), target.data());
-            collectDeadBlocksFromScope(topInst->body);
-            adbg("collectDeadGenerateBlocks: total dead blocks=%zu\n",
-                 dead_generate_blocks_.size());
-            return;
-        }
-    }
-    adbg("collectDeadGenerateBlocks: module '%.*s' NOT found among %zu top instances "
-         "(dead-branch detection inactive)\n",
-         (int)target.size(), target.data(), root.topInstances.size());
-}
-
 AutosAnalyzer::CollectedInfo
 AutosAnalyzer::collectModuleInfo(const ModuleDeclarationSyntax& module) {
     CollectedInfo info;
     bool in_autologic_block = false;
-
-    // Populate dead_generate_blocks_ from the elaborated AST so the parser
-    // walk below can skip declaration / read-write tracking inside pruned
-    // branches.
-    dead_generate_blocks_.clear();
-    collectDeadGenerateBlocks(module);
 
     // The member walk both detects markers and (via UsageClassifier) records
     // which nets the module's own logic reads vs. writes into
     // internally_consumed / internally_driven, which the filters below use to
     // keep internally-used nets out of the port list.
     for (auto* member : module.members) {
-        processMemberRecursive(member, info, in_autologic_block, /*in_dead_branch=*/false);
+        processMemberRecursive(member, info, in_autologic_block);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -759,7 +678,7 @@ void AutosAnalyzer::resolvePortsAndSignals(
 
     // Process AUTOINST instances
     for (auto& inst : info.autoinsts) {
-        auto ports = getModulePorts(inst.module_type);
+        auto ports = getModulePorts(inst.module_type, inst.node);
         adbg("  AUTOINST inst='%s' type='%s' resolved_ports=%zu%s\n",
              inst.instance_name.c_str(), inst.module_type.c_str(), ports.size(),
              ports.empty() ? "  <-- EMPTY: instance SKIPPED, signals dropped" : "");
@@ -779,7 +698,7 @@ void AutosAnalyzer::resolvePortsAndSignals(
 
     // Process manual (non-AUTOINST) instances for signal direction tracking
     for (auto& inst : info.manual_insts) {
-        auto ports = getModulePorts(inst.module_type);
+        auto ports = getModulePorts(inst.module_type, inst.node);
         adbg("  MANUAL   inst='%s' type='%s' resolved_ports=%zu connections=%zu%s\n",
              inst.instance_name.c_str(), inst.module_type.c_str(), ports.size(),
              inst.port_connections.size(),
@@ -833,9 +752,20 @@ void AutosAnalyzer::resolvePortsAndSignals(
     }
 }
 
-std::vector<PortInfo> AutosAnalyzer::getModulePorts(const std::string& module_name) {
-    return getModulePortsFromCompilation(
-        compilation_, module_name, options_.diagnostics, options_.strictness);
+std::vector<PortInfo> AutosAnalyzer::getModulePorts(const std::string& module_name,
+                                                    const SyntaxNode* site_node) {
+    size_t offset = site_node ? site_node->sourceRange().start().offset() : 0;
+    auto key = std::make_pair(module_name, offset);
+    if (auto it = port_cache_.find(key); it != port_cache_.end()) {
+        return it->second;
+    }
+
+    PortLookupSite site{source_content_, offset};
+    auto ports = getModulePortsFromCompilation(
+        compilation_, module_name, options_.diagnostics, options_.strictness,
+        site_node ? &site : nullptr);
+    port_cache_[key] = ports;
+    return ports;
 }
 
 std::vector<PortConnection> AutosAnalyzer::buildConnections(
@@ -884,19 +814,32 @@ void AutosAnalyzer::generateReplacements(
     const ModuleDeclarationSyntax& module,
     const CollectedInfo& info) {
 
+    (void)module;
+
     for (const auto& inst : info.autoinsts) {
-        auto ports = getModulePorts(inst.module_type);
+        auto ports = getModulePorts(inst.module_type, inst.node);
         if (!ports.empty()) {
             generateAutoInstReplacement(inst, ports);
         }
     }
 
+    // AUTOPORTS is decided first so AUTOLOGIC can defer to it: a net that
+    // becomes a port must never also be declared as internal logic.
+    std::vector<AutoportEntry> all_ports;
+    std::set<std::string> port_names;
+    if (info.has_autoports) {
+        all_ports = computeAutoportsList(info);
+        for (const auto& [dir, net] : all_ports) {
+            port_names.insert(net.name);
+        }
+    }
+
     if (info.has_autologic) {
-        generateAutologicReplacement(info);
+        generateAutologicReplacement(info, port_names);
     }
 
     if (info.has_autoports) {
-        generateAutoportsReplacement(module, info);
+        generateAutoportsReplacement(info, all_ports);
     }
 }
 
@@ -1042,8 +985,9 @@ void AutosAnalyzer::generateAutoInstReplacement(
     ++autoinst_count_;
 }
 
-void AutosAnalyzer::generateAutologicReplacement(const CollectedInfo& info) {
-    std::string decls = generateAutologicDecls(info);
+void AutosAnalyzer::generateAutologicReplacement(const CollectedInfo& info,
+                                                 const std::set<std::string>& port_names) {
+    std::string decls = generateAutologicDecls(info, port_names);
 
     adbg("generateAutologicReplacement: has_existing_block=%d block_start=%zu block_end=%zu "
          "marker_end=%zu decls_len=%zu qos_in_decls=%d\n",
@@ -1097,10 +1041,8 @@ void AutosAnalyzer::generateAutologicReplacement(const CollectedInfo& info) {
     ++autologic_count_;
 }
 
-void AutosAnalyzer::generateAutoportsReplacement(
-    const ModuleDeclarationSyntax& module,
-    const CollectedInfo& info) {
-
+std::vector<AutosAnalyzer::AutoportEntry>
+AutosAnalyzer::computeAutoportsList(const CollectedInfo& info) {
     auto inputs = aggregator_.getExternalInputNets();
     auto outputs = aggregator_.getExternalOutputNets();
     auto inouts = aggregator_.getInoutNets();
@@ -1150,24 +1092,9 @@ void AutosAnalyzer::generateAutoportsReplacement(
     filter_inouts(inouts);
     filter_inputs(inputs);
 
-    // Build replacement text (goes after marker, before close paren)
-    std::ostringstream oss;
-
-    bool prefer_original = preferOriginalSyntax();
-    const char* net_kw = netTypeKeyword(options_.net_type);
-    auto fmt = [prefer_original, net_kw](const std::string& dir, const NetInfo& n) {
-        std::ostringstream p;
-        p << dir << " " << net_kw;
-        if (!n.getRangeStr(prefer_original).empty()) p << " " << n.getRangeStr(prefer_original);
-        p << " " << n.name;
-        // Add unpacked array dimensions after the name
-        if (!n.getArrayDims().empty()) p << n.getArrayDims();
-        return p.str();
-    };
-
     // Order ports according to options_.grouping.
     // Mirrors generatePortConnections() for AUTOINST so both macros stay consistent.
-    std::vector<std::pair<std::string, NetInfo>> all_ports;
+    std::vector<AutoportEntry> all_ports;
     switch (options_.grouping) {
         case PortGrouping::Alphabetical: {
             for (const auto& n : outputs) all_ports.emplace_back("output", n);
@@ -1202,6 +1129,28 @@ void AutosAnalyzer::generateAutoportsReplacement(
             break;
         }
     }
+
+    return all_ports;
+}
+
+void AutosAnalyzer::generateAutoportsReplacement(
+    const CollectedInfo& info,
+    const std::vector<AutoportEntry>& all_ports) {
+
+    // Build replacement text (goes after marker, before close paren)
+    std::ostringstream oss;
+
+    bool prefer_original = preferOriginalSyntax();
+    const char* net_kw = netTypeKeyword(options_.net_type);
+    auto fmt = [prefer_original, net_kw](const std::string& dir, const NetInfo& n) {
+        std::ostringstream p;
+        p << dir << " " << net_kw;
+        if (!n.getRangeStr(prefer_original).empty()) p << " " << n.getRangeStr(prefer_original);
+        p << " " << n.name;
+        // Add unpacked array dimensions after the name
+        if (!n.getArrayDims().empty()) p << n.getArrayDims();
+        return p.str();
+    };
 
     // Check if we need to add a comma between existing ports and generated ports
     // This is needed when the user's last port doesn't have a trailing comma
@@ -1434,7 +1383,8 @@ std::string AutosAnalyzer::generatePortConnections(
     return oss.str();
 }
 
-std::string AutosAnalyzer::generateAutologicDecls(const CollectedInfo& info) {
+std::string AutosAnalyzer::generateAutologicDecls(const CollectedInfo& info,
+                                                  const std::set<std::string>& port_names) {
     const auto& existing_decls = info.existing_decls;
 
     auto nets = aggregator_.getInternalNets();
@@ -1452,10 +1402,12 @@ std::string AutosAnalyzer::generateAutologicDecls(const CollectedInfo& info) {
     }
 
     std::vector<NetInfo> to_declare;
-    std::set<std::string> already_added;
+    // Names that must not be declared here: user declarations, and anything
+    // AUTOPORTS is about to declare as a port of this module.
+    std::set<std::string> already_added(port_names);
 
     for (const auto& net : nets) {
-        if (!existing_decls.count(net.name)) {
+        if (!existing_decls.count(net.name) && !already_added.count(net.name)) {
             to_declare.push_back(net);
             already_added.insert(net.name);
         }

@@ -1,6 +1,6 @@
 // Test: AUTOLOGIC with parameterized port widths
-// internal_data should be declared with original syntax [WIDTH-1:0]
-// Note: User must ensure WIDTH is in scope for valid SystemVerilog
+// internal_data is declared with the resolved width [7:0]: WIDTH is a
+// parameter of submod only and is not in scope here.
 module top_autologic(
     input logic clk
 );

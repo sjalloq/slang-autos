@@ -1,6 +1,9 @@
 #include "slang-autos/CompilationUtils.h"
+#include "slang-autos/SignalAggregator.h"
 
+#include "slang/ast/ASTContext.h"
 #include "slang/ast/Compilation.h"
+#include "slang/ast/Lookup.h"
 #include "slang/ast/symbols/BlockSymbols.h"
 #include "slang/ast/symbols/CompilationUnitSymbols.h"
 #include "slang/ast/symbols/InstanceSymbols.h"
@@ -9,6 +12,8 @@
 #include "slang/ast/types/AllTypes.h"
 #include "slang/ast/types/DeclaredType.h"
 #include "slang/syntax/AllSyntax.h"
+#include "slang/syntax/SyntaxTree.h"
+#include "slang/syntax/SyntaxVisitor.h"
 #include "slang/text/SourceManager.h"
 
 #include <functional>
@@ -165,107 +170,211 @@ std::string extractOriginalDimensions(const PortSymbol& portSym, const slang::So
 
 } // anonymous namespace
 
-std::vector<PortInfo> getModulePortsFromCompilation(
-    slang::ast::Compilation& compilation,
-    const std::string& module_name,
-    DiagnosticCollector* diagnostics,
-    StrictnessMode strictness) {
+namespace {
 
-    std::vector<PortInfo> ports;
+/// True when @p loc sits in the buffer whose content is @p site's file.
+bool locationInSiteFile(const slang::SourceManager& sm, slang::SourceLocation loc,
+                        const PortLookupSite& site) {
+    if (!loc.buffer().valid()) return false;
+    std::string_view text = sm.getSourceText(loc.buffer());
+    // slang null-terminates its buffers; the analyzer's copy of the file is not.
+    if (!text.empty() && text.back() == '\0') {
+        text.remove_suffix(1);
+    }
+    return text == site.source_text;
+}
 
+/// The scope AUTO output is written into: the top instance whose body lives
+/// in the site's file, or failing that the first top instance.
+const Scope* findParentScope(Compilation& compilation, const PortLookupSite* site) {
     auto& root = compilation.getRoot();
-    const InstanceBodySymbol* found_body = nullptr;
+    auto& sm = *compilation.getSourceManager();
+    if (site) {
+        for (auto* topInst : root.topInstances) {
+            if (auto* syntax = topInst->body.getSyntax()) {
+                if (locationInSiteFile(sm, syntax->sourceRange().start(), *site)) {
+                    return &topInst->body;
+                }
+            }
+        }
+    }
+    return root.topInstances.empty() ? nullptr : &root.topInstances[0]->body;
+}
 
-    // Helper function to check a member for a matching module body.
-    // Uses std::function to allow recursive calls for multi-dimensional arrays
-    // and generate blocks.
-    std::function<bool(const Symbol&)> checkMember = [&](const Symbol& member) -> bool {
-        // Handle single instances
+/// Walk up from an instance's own syntax to the enclosing instantiation
+/// statement (`mod #(...) u_x (...);`), which is what analysis sites refer to.
+const SyntaxNode* enclosingInstantiation(const SyntaxNode* node) {
+    while (node && node->kind != SyntaxKind::HierarchyInstantiation) {
+        node = node->parent;
+    }
+    return node;
+}
+
+/// Find an elaborated instance body for @p module_name under the top
+/// instances. When a site is given and an instance was created from exactly
+/// that site, prefer it so its parameter overrides are honoured; otherwise
+/// any instance of the module will do.
+const InstanceBodySymbol* findElaboratedBody(Compilation& compilation,
+                                             const std::string& module_name,
+                                             const PortLookupSite* site) {
+    auto& root = compilation.getRoot();
+    auto& sm = *compilation.getSourceManager();
+
+    const InstanceBodySymbol* by_site = nullptr;
+    const InstanceBodySymbol* by_name = nullptr;
+
+    std::function<void(const Symbol&)> visit = [&](const Symbol& member) {
+        if (by_site) return;
         if (auto* inst = member.as_if<InstanceSymbol>()) {
-            if (inst->body.name == module_name) {
-                found_body = &inst->body;
-                return true;
-            }
-        }
-        // Handle instance arrays (e.g., module_name inst[2:0] (...))
-        // InstanceArraySymbol contains InstanceSymbol elements
-        else if (auto* instArray = member.as_if<InstanceArraySymbol>()) {
-            // Get the first element of the array to access the body
-            if (!instArray->elements.empty()) {
-                // Elements are InstanceSymbol or InstanceArraySymbol (for multi-dimensional)
-                const Symbol* elem = instArray->elements[0];
-                // Recursively check the element
-                if (checkMember(*elem)) {
-                    return true;
+            if (inst->body.name != module_name) return;
+            if (!by_name) by_name = &inst->body;
+            if (site) {
+                if (auto* stmt = enclosingInstantiation(inst->getSyntax())) {
+                    auto loc = stmt->sourceRange().start();
+                    if (loc.offset() == site->offset && locationInSiteFile(sm, loc, *site)) {
+                        by_site = &inst->body;
+                    }
                 }
             }
         }
-        // Handle generate blocks (e.g., if/case/loop generate)
-        else if (auto* genBlock = member.as_if<GenerateBlockSymbol>()) {
-            // Recursively search members inside the generate block
-            for (auto& m : genBlock->members()) {
-                if (checkMember(m)) {
-                    return true;
-                }
+        else if (auto* arr = member.as_if<InstanceArraySymbol>()) {
+            if (!arr->elements.empty()) visit(*arr->elements[0]);
+        }
+        else if (auto* gen = member.as_if<GenerateBlockSymbol>()) {
+            for (auto& m : gen->members()) visit(m);
+        }
+        else if (auto* genArr = member.as_if<GenerateBlockArraySymbol>()) {
+            for (auto* entry : genArr->entries) {
+                if (entry) visit(*entry);
             }
         }
-        // Handle generate block arrays (from loop generate)
-        else if (auto* genArray = member.as_if<GenerateBlockArraySymbol>()) {
-            // Search all elements in the array
-            for (auto* elem : genArray->entries) {
-                if (elem && checkMember(*elem)) {
-                    return true;
-                }
+    };
+
+    for (auto* topInst : root.topInstances) {
+        for (auto& member : topInst->body.members()) {
+            visit(member);
+            if (by_site) return by_site;
+        }
+    }
+    return by_name;
+}
+
+/// Locate the instantiation statement for @p site in the compilation's own
+/// syntax trees. The analyzer works on an independently parsed tree, so the
+/// node is matched by file content and offset rather than by pointer.
+struct SiteFinder : public SyntaxVisitor<SiteFinder> {
+    const slang::SourceManager& sm;
+    const PortLookupSite& site;
+    const HierarchyInstantiationSyntax* found = nullptr;
+
+    SiteFinder(const slang::SourceManager& s, const PortLookupSite& p) : sm(s), site(p) {}
+
+    void handle(const HierarchyInstantiationSyntax& node) {
+        if (found) return;
+        auto loc = node.sourceRange().start();
+        if (loc.offset() == site.offset && locationInSiteFile(sm, loc, site)) {
+            found = &node;
+            return;
+        }
+        visitDefault(node);
+    }
+};
+
+const HierarchyInstantiationSyntax* findSiteSyntax(Compilation& compilation,
+                                                   const PortLookupSite& site) {
+    auto& sm = *compilation.getSourceManager();
+    for (auto& tree : compilation.getSyntaxTrees()) {
+        SiteFinder finder(sm, site);
+        tree->root().visit(finder);
+        if (finder.found) return finder.found;
+    }
+    return nullptr;
+}
+
+/// Instantiate @p module_name on demand because elaboration produced no
+/// instance of it (typically: only instantiated in a pruned generate branch).
+/// A "virtual" instance is created: it is never added to any scope, but its
+/// parent is set to the top module body so the site's parameter assignments
+/// resolve exactly as they would in a live branch. Without a usable site the
+/// definition's default parameters apply.
+const InstanceBodySymbol* instantiateOnDemand(Compilation& compilation,
+                                              const std::string& module_name,
+                                              const PortLookupSite* site) {
+    const Scope* scope = findParentScope(compilation, site);
+    if (!scope) return nullptr;
+
+    auto lookup = compilation.tryGetDefinition(module_name, *scope);
+    if (!lookup.definition || lookup.definition->kind != SymbolKind::Definition) {
+        return nullptr;
+    }
+    auto& def = lookup.definition->as<DefinitionSymbol>();
+
+    const ParameterValueAssignmentSyntax* params = nullptr;
+    slang::SourceLocation loc = def.location;
+    if (site) {
+        if (auto* syntax = findSiteSyntax(compilation, *site)) {
+            params = syntax->parameters;
+            loc = syntax->type.location();
+        }
+    }
+
+    ASTContext context(*scope, LookupLocation::max);
+    auto& inst = InstanceSymbol::createVirtual(context, loc, def, params);
+    return &inst.body;
+}
+
+/// True if any identifier in the port's dimensions names a symbol private to
+/// the child (a parameter or localparam of @p body) that the parent scope does
+/// not also define. Such text is meaningless where the AUTO output is written,
+/// so the resolved width must be used instead. A name the parent also defines
+/// (a pass-through parameter) and macros are copied verbatim.
+bool dimensionsReferenceChildScope(const PortSymbol& portSym, const InstanceBodySymbol& body,
+                                   const Scope* parent) {
+    const Symbol* internal = portSym.internalSymbol;
+    if (!internal) return false;
+    const DeclaredType* declType = internal->getDeclaredType();
+    if (!declType) return false;
+    const DataTypeSyntax* typeSyntax = declType->getTypeSyntax();
+    if (!typeSyntax) return false;
+
+    auto check = [&](const auto& dimensions) {
+        for (size_t i = 0; i < dimensions.size(); ++i) {
+            for (const auto& id : extractIdentifiersFromSyntax(*dimensions[i])) {
+                if (body.find(id) && !(parent && parent->find(id))) return true;
             }
         }
         return false;
     };
+    if (IntegerTypeSyntax::isKind(typeSyntax->kind)) {
+        return check(typeSyntax->as<IntegerTypeSyntax>().dimensions);
+    }
+    if (typeSyntax->kind == SyntaxKind::ImplicitType) {
+        return check(typeSyntax->as<ImplicitTypeSyntax>().dimensions);
+    }
+    return false;
+}
 
-    // Search for the module in compilation's top instances
-    for (auto* topInst : root.topInstances) {
-        for (auto& member : topInst->body.members()) {
-            if (checkMember(member)) {
-                break;
-            }
-        }
-        if (found_body) break;
+} // anonymous namespace
+
+std::vector<PortInfo> getModulePortsFromCompilation(
+    slang::ast::Compilation& compilation,
+    const std::string& module_name,
+    DiagnosticCollector* diagnostics,
+    StrictnessMode strictness,
+    const PortLookupSite* site) {
+
+    std::vector<PortInfo> ports;
+
+    const Scope* parent_scope = findParentScope(compilation, site);
+    const InstanceBodySymbol* found_body = findElaboratedBody(compilation, module_name, site);
+    if (!found_body) {
+        found_body = instantiateOnDemand(compilation, module_name, site);
     }
 
     if (!found_body) {
         if (diagnostics) {
-            // Build diagnostic message with debug info about what was searched
             std::ostringstream msg;
             msg << "Module not found: " << module_name;
-
-            // In verbose mode, list what modules WERE found
-            std::vector<std::string> found_modules;
-            for (auto* topInst : root.topInstances) {
-                for (auto& member : topInst->body.members()) {
-                    if (auto* inst = member.as_if<InstanceSymbol>()) {
-                        found_modules.push_back(std::string(inst->body.name));
-                    } else if (auto* instArray = member.as_if<InstanceArraySymbol>()) {
-                        // For instance arrays, indicate it's an array
-                        if (!instArray->elements.empty()) {
-                            if (auto* elem = instArray->elements[0]->as_if<InstanceSymbol>()) {
-                                found_modules.push_back(std::string(elem->body.name) + " (array)");
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (!found_modules.empty()) {
-                msg << " (found: ";
-                for (size_t i = 0; i < found_modules.size() && i < 5; ++i) {
-                    if (i > 0) msg << ", ";
-                    msg << found_modules[i];
-                }
-                if (found_modules.size() > 5) {
-                    msg << ", ... (" << (found_modules.size() - 5) << " more)";
-                }
-                msg << ")";
-            }
-
             if (strictness == StrictnessMode::Strict) {
                 diagnostics->addError(msg.str());
             } else {
@@ -324,8 +433,14 @@ std::vector<PortInfo> getModulePortsFromCompilation(
 
             info.width = elementType->getBitWidth();
 
-            // Try to extract original syntax (preserves parameters/macros)
-            info.original_range_str = extractOriginalDimensions(*portSym, *compilation.getSourceManager());
+            // Try to extract original syntax (preserves parameters/macros), but
+            // not when it names the child's own parameters: those don't exist
+            // in the parent, so `[W-1:0]` would be copied into a scope where W
+            // is undefined (or worse, means something else).
+            if (!dimensionsReferenceChildScope(*portSym, *found_body, parent_scope)) {
+                info.original_range_str =
+                    extractOriginalDimensions(*portSym, *compilation.getSourceManager());
+            }
 
             // Fallback: extract from resolved type (preserves multi-dimensional structure)
             if (elementType->isPackedArray()) {
