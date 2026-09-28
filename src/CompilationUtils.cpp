@@ -56,15 +56,16 @@ std::string extractUnpackedDimensions(const Type& type) {
 }
 
 /// Extract original source text for a syntax node, preserving macro references.
-/// Iterates through all tokens in the node and reconstructs the original text,
-/// replacing expanded macro tokens with their original macro invocations.
+///
+/// Every token is mapped back to the file-level range it was written in. For a
+/// token that came from a macro expansion that is the range of the outermost
+/// macro invocation (nested macros are followed up to the file), so a macro
+/// that expands to several tokens, e.g. `WD -> (`N+1), is written out exactly
+/// once. Text between consecutive ranges in the same buffer (whitespace,
+/// operators) is copied verbatim from the source.
 std::string extractOriginalSourceText(const SyntaxNode& node, const slang::SourceManager& sm) {
-    std::string result;
-
-    // Track whether we've seen any macro tokens
+    // Fast path: nothing came from a macro, so the node's own text is exact.
     bool hasMacroTokens = false;
-
-    // First pass: check if any tokens are from macro expansions
     for (auto it = node.tokens_begin(); it != node.tokens_end(); ++it) {
         auto token = *it;
         if (token.valid() && sm.isMacroLoc(token.location())) {
@@ -72,97 +73,56 @@ std::string extractOriginalSourceText(const SyntaxNode& node, const slang::Sourc
             break;
         }
     }
-
-    // If no macro tokens, just use toString() for efficiency
     if (!hasMacroTokens) {
         return node.toString();
     }
 
-    // Second pass: reconstruct text, replacing macro tokens with original source
-    // We need to track our position in the original source to handle mixed macro/non-macro
-    slang::BufferID currentBuffer;
-    size_t lastEndOffset = 0;
-    bool firstToken = true;
+    // Map a token to the range where it is written in a file buffer.
+    auto fileRangeOf = [&](const slang::parsing::Token& token) -> slang::SourceRange {
+        auto loc = token.location();
+        if (!sm.isMacroLoc(loc)) {
+            return {loc, loc + token.rawText().length()};
+        }
+        // Follow nested expansions outwards until the invocation sits in a file.
+        auto range = sm.getExpansionRange(loc);
+        while (sm.isMacroLoc(range.start())) {
+            range = sm.getExpansionRange(range.start());
+        }
+        return range;
+    };
+
+    std::string result;
+    bool have_last = false;
+    slang::SourceRange last;
 
     for (auto it = node.tokens_begin(); it != node.tokens_end(); ++it) {
         auto token = *it;
         if (!token.valid()) continue;
 
-        auto tokenLoc = token.location();
-
-        if (sm.isMacroLoc(tokenLoc)) {
-            // Token is from macro expansion - get the original invocation location
-            auto expansionRange = sm.getExpansionRange(tokenLoc);
-            auto expansionStart = expansionRange.start();
-            auto expansionEnd = expansionRange.end();
-
-            std::string_view sourceText = sm.getSourceText(expansionStart.buffer());
-            if (sourceText.empty()) {
-                // Fallback: use token's raw text
-                result += token.rawText();
-                continue;
-            }
-
-            size_t macroStart = expansionStart.offset();
-            size_t macroEnd = expansionEnd.offset();
-
-            // Safety check
-            if (macroStart >= sourceText.size() || macroEnd > sourceText.size() || macroStart > macroEnd) {
-                result += token.rawText();
-                continue;
-            }
-
-            // If this is our first token or we're in a new buffer, just extract the macro
-            if (firstToken || currentBuffer != expansionStart.buffer()) {
-                result += sourceText.substr(macroStart, macroEnd - macroStart);
-                currentBuffer = expansionStart.buffer();
-                lastEndOffset = macroEnd;
-                firstToken = false;
-            } else {
-                // Check if there's a gap between last position and this macro
-                // (there shouldn't be in well-formed code, but handle it)
-                if (macroStart > lastEndOffset) {
-                    // There's non-macro text between - include it
-                    result += sourceText.substr(lastEndOffset, macroStart - lastEndOffset);
-                }
-                result += sourceText.substr(macroStart, macroEnd - macroStart);
-                lastEndOffset = macroEnd;
-            }
-        } else {
-            // Non-macro token - use its location to extract from original source
-            auto tokenBuffer = tokenLoc.buffer();
-            std::string_view sourceText = sm.getSourceText(tokenBuffer);
-
-            if (sourceText.empty()) {
-                result += token.rawText();
-                continue;
-            }
-
-            size_t tokenStart = tokenLoc.offset();
-            size_t tokenLen = token.rawText().length();
-            size_t tokenEnd = tokenStart + tokenLen;
-
-            // Safety check
-            if (tokenStart >= sourceText.size() || tokenEnd > sourceText.size()) {
-                result += token.rawText();
-                continue;
-            }
-
-            if (firstToken || currentBuffer != tokenBuffer) {
-                result += sourceText.substr(tokenStart, tokenLen);
-                currentBuffer = tokenBuffer;
-                lastEndOffset = tokenEnd;
-                firstToken = false;
-            } else {
-                // Same buffer - check for gap (whitespace, etc.)
-                if (tokenStart > lastEndOffset && currentBuffer == tokenBuffer) {
-                    // Include any text between tokens (like whitespace within the expression)
-                    result += sourceText.substr(lastEndOffset, tokenStart - lastEndOffset);
-                }
-                result += sourceText.substr(tokenStart, tokenLen);
-                lastEndOffset = tokenEnd;
-            }
+        auto range = fileRangeOf(token);
+        if (have_last && range == last) {
+            continue;  // another token of the same macro invocation
         }
+
+        std::string_view text = sm.getSourceText(range.start().buffer());
+        size_t start = range.start().offset();
+        size_t stop = range.end().offset();
+        if (text.empty() || start > stop || stop > text.size()) {
+            result += token.rawText();  // defensive fallback, keep going
+            have_last = false;
+            continue;
+        }
+
+        // Copy any gap (whitespace, punctuation) between the previous range
+        // and this one when both sit in the same buffer.
+        if (have_last && last.end().buffer() == range.start().buffer() &&
+            last.end().offset() < start) {
+            result += text.substr(last.end().offset(), start - last.end().offset());
+        }
+
+        result += text.substr(start, stop - start);
+        last = range;
+        have_last = true;
     }
 
     return result;

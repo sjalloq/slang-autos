@@ -433,6 +433,35 @@ TEST_CASE("Integration - generate branch with trailing comments before AUTOINST"
     }
 }
 
+TEST_CASE("Integration - macro port widths are copied once, not per expanded token",
+          "[integration][macro]") {
+    // A port declared as [`NFUNC_WD-1:0] where `NFUNC_WD expands (via a nested
+    // macro) to several tokens must reproduce the macro text exactly once.
+    auto top_sv = getFixturePath("macro_nested_width/top.sv");
+    auto lib_dir = getFixturePath("macro_nested_width/lib");
+
+    REQUIRE(fs::exists(top_sv));
+    REQUIRE(fs::exists(lib_dir));
+
+    AutosTool tool;
+    REQUIRE(tool.loadWithArgs({
+        top_sv.string(),
+        "-y", lib_dir.string(),
+        "+libext+.sv",
+        "+incdir+" + lib_dir.string()
+    }));
+
+    auto result = tool.expandFile(top_sv, true);
+    CHECK(result.success);
+
+    CHECK(result.modified_content.find("[`NFUNC_WD-1:0] func_num") != std::string::npos);
+    CHECK(result.modified_content.find("[`PLAIN_WD-1:0] plain") != std::string::npos);
+
+    // The bug: every token of the expansion re-emitted the whole invocation.
+    CHECK(result.modified_content.find("`NFUNC_WD`NFUNC_WD") == std::string::npos);
+    CHECK(result.modified_content.find("`NFUNC_WD4") == std::string::npos);
+}
+
 TEST_CASE("Integration - parameterized port widths preserve original syntax", "[integration]") {
     // AUTOLOGIC should preserve original syntax (e.g., [WIDTH-1:0])
     // The user is responsible for ensuring parameters are in scope
